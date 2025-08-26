@@ -30,5 +30,8 @@ perl yyC2Swp.pl [-cCC3] [-a] [-o01:00:00:00] [-td] infile.scc [outfile.ass]
 
 NOTE: outfile argument is optional, and will default to the same name as the input file with a different extension (name.scc/g608 -> name.ass). Format is controlled by outfile suffix: .vtt WebVTT, .smi SAMI, .ssa Sub-Station Alpha, .ass Advanced Sub-Station (default), or .ccd SCC Disassembly (SCC input only).
 
+# Notes
+Captions are converted assuming a 4:3 NTSC display resolution (640x480 in square pixels). I intend to add options for overriding the target resolution and aspect ratio at a later date.
+
 # Credits
 This script is modified from CCASDI by McPoodle. Almost all of the caption parsing and SCC <-> CCD conversion logic is their work.
