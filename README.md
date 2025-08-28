@@ -1,7 +1,7 @@
 # YYC2SWP 
 ## Y|yukichigai's Caption to Subtitle (with positioning!)
 
-This is a command line Perl script which can convert Closed Captions (Scenarist or [Grid 608](https://github.com/CCExtractor/ccextractor/blob/master/docs/G608.TXT) format) to more accessible subtitle formats (SubStation, Advanced Substation, WebVTT) while preserving subtitle positioning. This tool is a fork of/based on CCASDI by McPoodle, part of the discontinued [SCC Tools](http://www.theneitherworld.com/mcpoodle/SCC_TOOLS/DOCS/SCC_TOOLS.HTML) project.
+This is a command line Perl script which can convert Closed Captions (Scenarist or [Grid 608](https://github.com/CCExtractor/ccextractor/blob/master/docs/G608.TXT) format) to more accessible subtitle formats (SubStation, Advanced Substation, Timed Text Markup Language, WebVTT) while preserving subtitle positioning. This tool is a fork of/based on CCASDI by McPoodle, part of the discontinued [SCC Tools](http://www.theneitherworld.com/mcpoodle/SCC_TOOLS/DOCS/SCC_TOOLS.HTML) project.
 
 # Requirements
 
@@ -28,10 +28,23 @@ perl yyC2Swp.pl [-cCC3] [-a] [-o01:00:00:00] [-td] infile.scc [outfile.ass]
 
 -t (OPTIONAL; automatically sets fps to 29.97): NTSC timebase: d (dropframe) or n (non-dropframe) (DEFAULT: n)
 
-NOTE: outfile argument is optional, and will default to the same name as the input file with a different extension (name.scc/g608 -> name.ass). Format is controlled by outfile suffix: .vtt WebVTT, .smi SAMI, .ssa Sub-Station Alpha, .ass Advanced Sub-Station (default), or .ccd SCC Disassembly (SCC input only).
+NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is controlled by outfile suffix: .vtt WebVTT, .smi/.sami SAMI, .ssa SubStation Alpha, .ttml/.dfxp Timed Text Markup Language, .ass Advanced SubStation (default), or .ccd SCC Disassembly (SCC input only)
 
 # Notes
-Captions are converted assuming a 4:3 NTSC display resolution (640x480 in square pixels). I intend to add options for overriding the target resolution and aspect ratio at a later date.
+Captions are converted assuming a 4:3 NTSC display resolution (640x480 in square pixels) and padded for overscan. I intend to add options for overriding the target resolution, aspect ratio, and overscan at a later date.
+
+## Current conversion quality
+Currently Advanced SubStation (ASS) produces the most consistent output for commonly used players (VLC, MPC, MPV, Jellyfin) closely followed by normal SubStation (SSA). Timed Text Markup Language (TTML/DFXP) is unsupported by some players (MPV) and produces less visually consistent results, though still accurate; it is supported fully by numerous web-based players as well. WebVTT (VTT) output is very accurate for web-based players, but formatting support is spotty at best for most software (e.g. VLC does not process left/right positioning, MPV does not process positioning at all).
+
+SAMI output is currently a hot mess (official term) and still in progress. The format may be dropped owing to poor feature support among most players.
 
 # Credits
 This script is modified from CCASDI by McPoodle. Almost all of the caption parsing and SCC <-> CCD conversion logic is their work.
+
+# Changelog
+
+0.6 Improve WebVTT output, add more formatting support to TTML. Add warning for WebVTT and TTML when multiple formatting changes are present in a subtitle due to possible inaccuracies in conversion. WebVTT output is technically accurate for web, but less so for VLC/MPC.
+
+0.5 Add TTML/DFXP support. Output is less accurate than SSA/ASS but mostly correct.
+
+0.4 Initial release. SubStation and Advanced SubStation output mostly correct, SAMI and WebVTT lacking.
