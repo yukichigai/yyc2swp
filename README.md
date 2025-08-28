@@ -34,7 +34,9 @@ NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is contro
 Captions are converted assuming a 4:3 NTSC display resolution (640x480 in square pixels) and padded for overscan. I intend to add options for overriding the target resolution, aspect ratio, and overscan at a later date.
 
 ## Current conversion quality
-Currently Advanced SubStation (ASS) produces the most consistent output for commonly used players (VLC, MPC, MPV, Jellyfin) closely followed by normal SubStation (SSA). Timed Text Markup Language (TTML/DFXP) is unsupported by some players (MPV) and produces less visually consistent results, though still accurate; it is supported fully by numerous web-based players as well. WebVTT (VTT) output is very accurate for web-based players, but formatting support is spotty at best for most software (e.g. VLC does not process left/right positioning, MPV does not process positioning at all).
+Currently Advanced SubStation (ASS) produces the most consistent output for commonly used players (VLC, MPC, MPV, Jellyfin) closely followed by normal SubStation (SSA). Timed Text Markup Language (TTML/DFXP) is unsupported by some players (MPV) and produces less visually consistent results, though still positionally accurate; it is supported fully by numerous web-based players as well. WebVTT (VTT) output is very accurate for web-based players, but formatting support is spotty at best for most software (e.g. VLC does not process left/right positioning, MPV does not process positioning at all).
+
+TTML/DFXP conversion may be inaccurate for text with overlapping formatting and/or color changes (e.g. italic for a few characters, then underlined + italic, then no italic but still underlined, so on). This is because TTML uses the same tag (span) for all formatting and color changes. Argh! WebVTT may also produce inaccurate results for text with multiple color changes; other text formatting is not affected and should be preserved accurately.
 
 SAMI output is currently a hot mess (official term) and still in progress. The format may be dropped owing to poor feature support among most players.
 
