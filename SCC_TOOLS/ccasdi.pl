@@ -1,12 +1,14 @@
+#!/usr/bin/env perl
+
 #working on multi-line XDS
-# ccasdi.pl: Convert between Scenarist Closed Caption format and Closed Caption 
+# ccasdi.pl: Convert between Scenarist Closed Caption format and Closed Caption
 #  Disassembly, convert Scenarist Closed Caption format to subtitle format
 # Run file without arguments to see usage
 # Closed Caption Disassembly is my own creation and is documented at
 #  http://www.geocities.com/mcpoodle43/SCC_TOOLS/DOCS/SCC_TOOLS.HTML.
 #
 use strict;
-my $Version = "3.5";
+my $Version = "3.8";
 # McPoodle (mcpoodle43@yahoo.com)
 #
 # Version History
@@ -32,7 +34,7 @@ my $Version = "3.5";
 #     added parsing of background color commands (used by text captions),
 #     added parsing of eXtended Data Service and Interactive TV messages
 #       (ITV only requires changed character parsing, since it is stored as plain text),
-#     changed invalid character from "*" to "£", since "*" is used by ITV,
+#     changed invalid character from "*" to "¬£", since "*" is used by ITV,
 #     assume channel is 1 for disassembly (required for XDS to work)
 # 2.1 finally figured out drop vs non-drop (changing frame and timecodeof functions)
 #       and correctly parsing and outputting non-drop timecodes,
@@ -79,6 +81,12 @@ my $Version = "3.5";
 # 3.4 Fixed character set comparison (was always using ITV set)
 # 3.5 Fixed numerous XDS bugs, including using the wrong filler byte
 #       (0x80 instead of 0x40)
+# 3.5.1 Added check for correct word length in CCD input
+# 3.6 Fixed odd parity for CCD->SCC
+# 3.6.1 Bug fix for SAMI header and screen clear lines
+# 3.7 Added Quicktime Caption format to subtitle export
+# 3.7.1 Fixed {ldq} and {rdq} definitions.
+# 3.8 Added Timed Text output (from Thomas J. Webb)
 
 sub usage;
 sub frame;
@@ -103,8 +111,8 @@ my $fps = 30000/1001; # NTSC framerate
 my $drop = 0; # assume non-drop
 my $convert = 0; # convert to subtitles: 1 = yes, 0 = no
 my $convertFormat = "SubRip"; # output format for subtitle conversion
- # other choices: Encore, MicroDVD, SAMI, PowerDivX,
- #  Sub-Station Alpha, and Advanced Sub-Station
+ # other choices: Encore, MicroDVD, Quicktime Caption, SAMI, PowerDivX,
+ #  Sub-Station Alpha, Advanced Sub-Station
 my $convertModeChannel = "CC1"; # which channel to convert
  # other choices: CC2, CC3, CC4, T1, T2, T3, T4
 my $subRollupMode = 0; # how to convert roll-up captions to subtitles:
@@ -160,7 +168,7 @@ while ($_ = shift) {
     $input = $_;
     next;
   }
-  $output = $_; 
+  $output = $_;
 }
 
 # print ("\nInput: ", $input);
@@ -249,6 +257,13 @@ if ($output eq "~") {
       if ($suffix =~ m/ssa/i) { $convertFormat = "Sub-Station Alpha"; }
       if ($suffix =~ m/ass/i) { $convertFormat = "Advanced Sub-Station"; }
       if ($suffix =~ m/txt/i) { $convertFormat = "Encore"; }
+      if ($suffix =~ m/qtc/i) {
+        $convertFormat = "Quicktime Caption";
+        if ($input =~ m/(.*)(\.scc)$/i) {
+          $output = $1.".txt";
+        }
+      }
+      if ($suffix =~ m/tt/i) { $convertFormat = "Timed Text"; }
     }
     if ($convertFormat eq "~") {
       usage();
@@ -539,6 +554,17 @@ LINELOOP: while (<RH>) {
     }
     WORDLOOP: foreach $word (@words) {
       $numwords = $numwords + 1;
+      if (length($word) != 4) {
+        $outline =~ m/^( )(.+)/;
+        $outline = $2;
+        if ($convert == 0) {
+          print WH $timecode."\t".$outline."\n";
+          if ($assemble) {
+            print WH "\n";
+          }
+        }
+        die "Incorrect word length for word $numwords, timecode $timecode, stopped";
+      }
       $word =~ m/(..)(..)/;
       $hi = hex $1;
       $lo = hex $2;
@@ -677,7 +703,8 @@ sub usage {
   print "         NTSC timebase: d (dropframe) or n (non-dropframe) (DEFAULT: n)\n";
   print "  Notes: outfile argument is optional (name.scc <-> name.ccd).  For -s,\n";
   print "    control with outfile suffix: .srt SubRip, .smi SAMI, .psb Power DivX,\n";
-  print "    .ssa Sub-Station Alpha, .ass Advanced Sub-Station, or .txt Adobe Encore.\n\n";
+  print "    .ssa Sub-Station Alpha, .ass Advanced Sub-Station, .tt Timed Text, \n";
+  print "    .txt Adobe Encore or .qtc Quicktime Caption (will actually output as .txt).\n\n";
 }
 
 sub frame {
@@ -752,7 +779,7 @@ sub timecodeof {
   # frames
   $remainder -= ($ss * $fps);
   my $ff = sprintf("%d", $remainder + 0.5);
-  
+
   # correct for calculation errors that would produce illegal timecodes
   if ($ff > sprintf("%d", $fps)) { $ff = 0; $ss++;}
   # drop base means that first two frames of 9 out of 10 minutes don't exist
@@ -772,21 +799,21 @@ sub timecodeof {
 
 # subroutine to get odd-parity version of a number (individual bits add up to an odd number)
 sub oddParity {
-  my @odd = (0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
+  my @odd = (0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
              0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0);
   my $num = shift(@_);
   if (not $odd[$num]) {
@@ -837,12 +864,12 @@ sub convertToSub {
   my $subtitle = "";
   $color = "White";
   $underlined = 0;
-  $italicized = 0;  
+  $italicized = 0;
   for (my $row = 1; $row < 17; $row++) {
     my $nonEmptyRow = 0;
     # print "\n";
     # extra TO commands force me to push this out a bit
-    for (my $col = 0; $col < 40; $col++) { 
+    for (my $col = 0; $col < 40; $col++) {
       my $blanks = 0;
       if ($character[$row][$col] eq "\x00") {
         $blanks = 1;
@@ -931,7 +958,7 @@ sub outputHeader {
     print WH "<SAMI>\n";
     print WH "<HEAD>\n";
     print WH "<STYLE TYPE=\"text/css\">\n";
-    print WH "<--\n";
+    print WH "<!--\n";
     print WH "P {margin-left: 16pt; margin-right: 16pt; margin-bottom: 16pt; margin-top: 16pt;\n";
     print WH "   text-align: center; font-size: 18pt; font-family: arial; font-weight: bold; color: #f0f0f0;}\n";
     print WH ".UNKNOWNCC {Name:Unknown; lang:en-US; SAMIType:CC;}\n";
@@ -989,6 +1016,19 @@ sub outputHeader {
     print WH "\n";
     print WH "[Events]\n";
     print WH "Format: Layer, Start, End, Style, Actor, MarginL, MarginR, MarginV, Effect, Text\n";
+  }
+  if ($convertFormat eq "Quicktime Caption") {
+    print WH "{QTtext}{font:Arial}{justify:center}{size:12}{backColor:0,0,0}\n";
+    print WH "{textColor:65535,65535,65535}{timescale:30}{width:0}{height:0}\n";
+    print WH "[00:00:00.00] \n";
+  }
+  if ($convertFormat eq "Timed Text") {
+    print WH "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    print WH "\t".'<tt xml:lang="en" xmlns="http://www.w3.org/2006/04/ttaf1"  xmlns:tts="http://www.w3.org/2006/04/ttaf1#styling">'."\n";
+    print WH "\t\t<head>\n";
+    print WH "\t\t</head>\n";
+    print WH "\t\t<body>\n";
+    print WH "\t\t\t<div xml:lang=\"en\">\n";
   }
 }
 
@@ -1091,7 +1131,7 @@ sub outputSubtitle {
       # output subtitle
       print WH "<SYNC start=\"".$tc1."\"><P class=\"UNKNOWNCC\">\n";
       print WH $subtitle."</P></SYNC>\n";
-      print WH "<SYNC start=\"".$tc2."\"><P class=\"UNKNOWNCC\">&nbsp</P></SYNC>\n\n";
+      print WH "<SYNC start=\"".$tc2."\"><P class=\"UNKNOWNCC\"></P></SYNC>\n\n";
     }
     if ($convertFormat eq "PowerDivX") {
       # timecode manipulation
@@ -1137,6 +1177,74 @@ sub outputSubtitle {
       # output subtitle
       print WH "Dialogue: ,".$tc1.",".$tc2.",*Default,,,,,,".$subtitle;
     }
+    if ($convertFormat eq "Timed Text") {
+      ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
+      $ms = sprintf("%d", ($ff / $fps * 10) + 0.5);
+      $tc1 = sprintf("%02d:%02d:%02d.%01d", $hh, $mm, $ss, $ms);
+      ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
+      $ms = sprintf("%d", ($ff / $fps * 10) + 0.5);
+      $tc2 = sprintf("%02d:%02d:%02d.%01d", $hh, $mm, $ss, $ms);
+      # subtitle manipulation
+      $subtitle =~ s/\n/<br>\n/g; # convert newlines to <br>
+      $subtitle =~ s/<br>\n$//; # then remove last one
+      # replace formatting tags with a single <span> tag
+      $formatting = "<span";
+      # font color
+      if ($subtitle =~ m/<font color=(\"\#......\")>/i) {
+        $formatting = $formatting." tts:color=".$1;
+      }
+      $subtitle =~ s/<font color=\"\#......\">//g;
+      $subtitle =~ s|</font>||g;
+      # bold
+      if ($subtitle =~ s|<b>||g) {
+        $formatting = $formatting." tts:fontWeight=\"bold\"";
+      }
+      $subtitle =~ s|</b>||g;
+      # italics
+      if ($subtitle =~ s|<i>||g) {
+        $formatting = $formatting." tts:fontStyle=\"italic\"";
+      }
+      $subtitle =~ s|</i>||g;
+      # underline is not supported
+      $subtitle =~ s|<u>||g;
+      $subtitle =~ s|</u>||g;
+      if ($formatting ne "<span") {
+        $subtitle = $formatting.">".$subtitle."</span>";
+      }
+      print WH "\t\t\t\t<p begin=\"$tc1\" end=\"$tc2\">$subtitle\n\t\t\t\t</p>\n";
+    }
+    if ($convertFormat eq "Quicktime Caption") {
+      # timecode manipulation
+      ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
+      $tc1 = sprintf("[%02s:%02s:%02s.%02s] ", $hh, $mm, $ss, $ff);
+      ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
+      $tc2 = sprintf("[%02s:%02s:%02s.%02s]", $hh, $mm, $ss, $ff);
+      # subtitle manipulation
+      $subtitle =~ s/\n/\x0d/g; # convert newlines to Mac newlines
+      $subtitle =~ s/\|$/\n/;   # then put last newline back
+      my $red = 0;
+      my $blue = 0;
+      my $green = 0;
+      my $colortag = "";
+      while ($subtitle =~ m/<font color=\"\#(..)(..)(..)\">/) {
+        $red = hex($1) * 256;
+        $blue = hex($2) * 256;
+        $green = hex($3) * 256;
+        if ($1 eq "ff") { $red = 65535; }
+        if ($2 eq "ff") { $blue = 65535; }
+        if ($3 eq "ff") { $green = 65535; }
+        $colortag = sprintf("{textColor:%d,%d,%d}", $red, $blue, $green);
+        $subtitle =~ s/<font color=\"\#......\">/$colortag/;
+      }
+      $subtitle =~ s|</font>|{textColor:65535,65535,65535}|g;
+      $subtitle =~ s/<b>/{bold}/g;
+      $subtitle =~ s/<i>/{italic}/g;
+      $subtitle =~ s/<u>/{underline}/g;
+      $subtitle =~ s|</[biu]>|{plain}|g; # replace all end tags with {plain}
+      # output subtitle
+      print WH $tc1.$subtitle;
+      print WH $tc2."\n"; # 2nd line clears screen
+    }
     # $startTime = "";
     # $endTime = "";
     # $subtitle = "";
@@ -1150,6 +1258,11 @@ sub outputFooter {
   if ($convertFormat eq "SAMI") {
     print WH "</BODY>\n";
     print WH "</SAMI>\n";
+  }
+  if ($convertFormat eq "Timed Text") {
+    print WH "\t\t\t</div>\n";
+    print WH "\t\t</body>\n";
+    print WH "\t</tt>\n";
   }
 }
 
@@ -1256,22 +1369,22 @@ sub disCommand {
           /2d/ && do {$color = "Magenta"; $italicized = 0; $underlined = 1; last SWITCH;};
           /2e/ && do {$italicized = 1; last SWITCH;};
           /2f/ && do {$italicized = 1; $underlined = 1; last SWITCH;};
-          /30/ && do {$commandtoken = "Æ"; last SWITCH;};
-          /31/ && do {$commandtoken = "∞"; last SWITCH;};
-          /32/ && do {$commandtoken = "Ω"; last SWITCH;};
-          /33/ && do {$commandtoken = "ø"; last SWITCH;};
+          /30/ && do {$commandtoken = "¬Æ"; last SWITCH;};
+          /31/ && do {$commandtoken = "¬∞"; last SWITCH;};
+          /32/ && do {$commandtoken = "¬Ω"; last SWITCH;};
+          /33/ && do {$commandtoken = "¬ø"; last SWITCH;};
           /34/ && do {$commandtoken = "*"; last SWITCH;}; # {tm}
-          /35/ && do {$commandtoken = "¢"; last SWITCH;};
-          /36/ && do {$commandtoken = "£"; last SWITCH;};
+          /35/ && do {$commandtoken = "¬¢"; last SWITCH;};
+          /36/ && do {$commandtoken = "¬£"; last SWITCH;};
           /37/ && do {$commandtoken = "*"; last SWITCH;}; # {note}
-          /38/ && do {$commandtoken = "‡"; last SWITCH;};
+          /38/ && do {$commandtoken = "√†"; last SWITCH;};
           /39/ && do {$commandtoken = " "; last SWITCH;};
-          /3a/ && do {$commandtoken = "Ë"; last SWITCH;};
-          /3b/ && do {$commandtoken = "‚"; last SWITCH;};
-          /3c/ && do {$commandtoken = "Í"; last SWITCH;};
-          /3d/ && do {$commandtoken = "Ó"; last SWITCH;};
-          /3e/ && do {$commandtoken = "Ù"; last SWITCH;};
-          /3f/ && do {$commandtoken = "˚"; last SWITCH;};
+          /3a/ && do {$commandtoken = "√®"; last SWITCH;};
+          /3b/ && do {$commandtoken = "√¢"; last SWITCH;};
+          /3c/ && do {$commandtoken = "√™"; last SWITCH;};
+          /3d/ && do {$commandtoken = "√Æ"; last SWITCH;};
+          /3e/ && do {$commandtoken = "√¥"; last SWITCH;};
+          /3f/ && do {$commandtoken = "√ª"; last SWITCH;};
           /40/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "White";
                       $underlined = 0; $italicized = 0; last SWITCH;};
           /41/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "White";
@@ -1404,39 +1517,39 @@ sub disCommand {
       };
       /12/ && do {
         for ($lo) {
-          /20/ && do {$commandtoken = "¡"; $extendedChar = 1; last SWITCH;};
-          /21/ && do {$commandtoken = "…"; $extendedChar = 1; last SWITCH;};
-          /22/ && do {$commandtoken = "”"; $extendedChar = 1; last SWITCH;};
-          /23/ && do {$commandtoken = "⁄"; $extendedChar = 1; last SWITCH;};
-          /24/ && do {$commandtoken = "‹"; $extendedChar = 1; last SWITCH;};
-          /25/ && do {$commandtoken = "¸"; $extendedChar = 1; last SWITCH;};
+          /20/ && do {$commandtoken = "√Å"; $extendedChar = 1; last SWITCH;};
+          /21/ && do {$commandtoken = "√â"; $extendedChar = 1; last SWITCH;};
+          /22/ && do {$commandtoken = "√ì"; $extendedChar = 1; last SWITCH;};
+          /23/ && do {$commandtoken = "√ö"; $extendedChar = 1; last SWITCH;};
+          /24/ && do {$commandtoken = "√ú"; $extendedChar = 1; last SWITCH;};
+          /25/ && do {$commandtoken = "√º"; $extendedChar = 1; last SWITCH;};
           /26/ && do {$commandtoken = "'"; $extendedChar = 1; last SWITCH;};
-          /27/ && do {$commandtoken = "°"; $extendedChar = 1; last SWITCH;};
+          /27/ && do {$commandtoken = "¬°"; $extendedChar = 1; last SWITCH;};
           /28/ && do {$commandtoken = "*"; $extendedChar = 1; last SWITCH;};
           /29/ && do {$commandtoken = "'"; $extendedChar = 1; last SWITCH;};
           /2a/ && do {$commandtoken = "-"; $extendedChar = 1; last SWITCH;};
-          /2b/ && do {$commandtoken = "©"; $extendedChar = 1; last SWITCH;};
+          /2b/ && do {$commandtoken = "¬©"; $extendedChar = 1; last SWITCH;};
           /2c/ && do {$commandtoken = "*"; $extendedChar = 1; last SWITCH;}; # {sm}
-          /2d/ && do {$commandtoken = "∑"; $extendedChar = 1; last SWITCH;};
+          /2d/ && do {$commandtoken = "¬∑"; $extendedChar = 1; last SWITCH;};
           /2e/ && do {$commandtoken = "\""; $extendedChar = 1; last SWITCH;};
           /2f/ && do {$commandtoken = "\""; $extendedChar = 1; last SWITCH;};
-          /30/ && do {$commandtoken = "¿"; $extendedChar = 1; last SWITCH;};
-          /31/ && do {$commandtoken = "¬"; $extendedChar = 1; last SWITCH;};
-          /32/ && do {$commandtoken = "«"; $extendedChar = 1; last SWITCH;};
-          /33/ && do {$commandtoken = "»"; $extendedChar = 1; last SWITCH;};
-          /34/ && do {$commandtoken = " "; $extendedChar = 1; last SWITCH;};
-          /35/ && do {$commandtoken = "À"; $extendedChar = 1; last SWITCH;};
-          /36/ && do {$commandtoken = "Î"; $extendedChar = 1; last SWITCH;};
-          /37/ && do {$commandtoken = "Œ"; $extendedChar = 1; last SWITCH;};
-          /38/ && do {$commandtoken = "œ"; $extendedChar = 1; last SWITCH;};
-          /39/ && do {$commandtoken = "Ô"; $extendedChar = 1; last SWITCH;};
-          /3a/ && do {$commandtoken = "‘"; $extendedChar = 1; last SWITCH;};
-          /3b/ && do {$commandtoken = "Ÿ"; $extendedChar = 1; last SWITCH;};
-          /3c/ && do {$commandtoken = "˘"; $extendedChar = 1; last SWITCH;};
-          /3d/ && do {$commandtoken = "€"; $extendedChar = 1; last SWITCH;};
-          /3e/ && do {$commandtoken = "´"; $extendedChar = 1; last SWITCH;};
-          /3f/ && do {$commandtoken = "ª"; $extendedChar = 1; last SWITCH;};
-          /40/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "White";
+          /30/ && do {$commandtoken = "√Ä"; $extendedChar = 1; last SWITCH;};
+          /31/ && do {$commandtoken = "√Ç"; $extendedChar = 1; last SWITCH;};
+          /32/ && do {$commandtoken = "√á"; $extendedChar = 1; last SWITCH;};
+          /33/ && do {$commandtoken = "√à"; $extendedChar = 1; last SWITCH;};
+          /34/ && do {$commandtoken = "√ä"; $extendedChar = 1; last SWITCH;};
+          /35/ && do {$commandtoken = "√ã"; $extendedChar = 1; last SWITCH;};
+          /36/ && do {$commandtoken = "√´"; $extendedChar = 1; last SWITCH;};
+          /37/ && do {$commandtoken = "√é"; $extendedChar = 1; last SWITCH;};
+          /38/ && do {$commandtoken = "√è"; $extendedChar = 1; last SWITCH;};
+          /39/ && do {$commandtoken = "√Ø"; $extendedChar = 1; last SWITCH;};
+          /3a/ && do {$commandtoken = "√î"; $extendedChar = 1; last SWITCH;};
+          /3b/ && do {$commandtoken = "√ô"; $extendedChar = 1; last SWITCH;};
+          /3c/ && do {$commandtoken = "√π"; $extendedChar = 1; last SWITCH;};
+          /3d/ && do {$commandtoken = "√õ"; $extendedChar = 1; last SWITCH;};
+          /3e/ && do {$commandtoken = "¬´"; $extendedChar = 1; last SWITCH;};
+          /3f/ && do {$commandtoken = "¬ª"; $extendedChar = 1; last SWITCH;};
+                    /40/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "White";
                       $underlined = 0; $italicized = 0; last SWITCH;};
           /41/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "White";
                       $underlined = 1; $italicized = 0; last SWITCH;};
@@ -1568,15 +1681,15 @@ sub disCommand {
       };
       /13/ && do {
         for ($lo) {
-          /20/ && do {$commandtoken = "√"; $extendedChar = 1; last SWITCH;};
-          /21/ && do {$commandtoken = "„"; $extendedChar = 1; last SWITCH;};
-          /22/ && do {$commandtoken = "Õ"; $extendedChar = 1; last SWITCH;};
-          /23/ && do {$commandtoken = "Ã"; $extendedChar = 1; last SWITCH;};
-          /24/ && do {$commandtoken = "Ï"; $extendedChar = 1; last SWITCH;};
-          /25/ && do {$commandtoken = "“"; $extendedChar = 1; last SWITCH;};
-          /26/ && do {$commandtoken = "Ú"; $extendedChar = 1; last SWITCH;};
-          /27/ && do {$commandtoken = "’"; $extendedChar = 1; last SWITCH;};
-          /28/ && do {$commandtoken = "ı"; $extendedChar = 1; last SWITCH;};
+          /20/ && do {$commandtoken = "√É"; $extendedChar = 1; last SWITCH;};
+          /21/ && do {$commandtoken = "√£"; $extendedChar = 1; last SWITCH;};
+          /22/ && do {$commandtoken = "√ç"; $extendedChar = 1; last SWITCH;};
+          /23/ && do {$commandtoken = "√å"; $extendedChar = 1; last SWITCH;};
+          /24/ && do {$commandtoken = "√¨"; $extendedChar = 1; last SWITCH;};
+          /25/ && do {$commandtoken = "√í"; $extendedChar = 1; last SWITCH;};
+          /26/ && do {$commandtoken = "√≤"; $extendedChar = 1; last SWITCH;};
+          /27/ && do {$commandtoken = "√ï"; $extendedChar = 1; last SWITCH;};
+          /28/ && do {$commandtoken = "√µ"; $extendedChar = 1; last SWITCH;};
           /29/ && do {$commandtoken = "{"; $extendedChar = 1; last SWITCH;};
           /2a/ && do {$commandtoken = "}"; $extendedChar = 1; last SWITCH;};
           /2b/ && do {$commandtoken = "\\"; $extendedChar = 1; last SWITCH;};
@@ -1584,18 +1697,18 @@ sub disCommand {
           /2d/ && do {$commandtoken = "_"; $extendedChar = 1; last SWITCH;};
           /2e/ && do {$commandtoken = "|"; $extendedChar = 1; last SWITCH;};
           /2f/ && do {$commandtoken = "~"; $extendedChar = 1; last SWITCH;};
-          /30/ && do {$commandtoken = "ƒ"; $extendedChar = 1; last SWITCH;};
-          /31/ && do {$commandtoken = "‰"; $extendedChar = 1; last SWITCH;};
-          /32/ && do {$commandtoken = "÷"; $extendedChar = 1; last SWITCH;};
-          /33/ && do {$commandtoken = "ˆ"; $extendedChar = 1; last SWITCH;};
-          /34/ && do {$commandtoken = "ﬂ"; $extendedChar = 1; last SWITCH;};
-          /35/ && do {$commandtoken = "•"; $extendedChar = 1; last SWITCH;};
-          /36/ && do {$commandtoken = "§"; $extendedChar = 1; last SWITCH;};
+          /30/ && do {$commandtoken = "√Ñ"; $extendedChar = 1; last SWITCH;};
+          /31/ && do {$commandtoken = "√§"; $extendedChar = 1; last SWITCH;};
+          /32/ && do {$commandtoken = "√ñ"; $extendedChar = 1; last SWITCH;};
+          /33/ && do {$commandtoken = "√∂"; $extendedChar = 1; last SWITCH;};
+          /34/ && do {$commandtoken = "√ü"; $extendedChar = 1; last SWITCH;};
+          /35/ && do {$commandtoken = "¬•"; $extendedChar = 1; last SWITCH;};
+          /36/ && do {$commandtoken = "¬§"; $extendedChar = 1; last SWITCH;};
           /37/ && do {$commandtoken = "|"; $extendedChar = 1; last SWITCH;};
-          /38/ && do {$commandtoken = "≈"; $extendedChar = 1; last SWITCH;};
-          /39/ && do {$commandtoken = "Â"; $extendedChar = 1; last SWITCH;};
-          /3a/ && do {$commandtoken = "ÿ"; $extendedChar = 1; last SWITCH;};
-          /3b/ && do {$commandtoken = "¯"; $extendedChar = 1; last SWITCH;};
+          /38/ && do {$commandtoken = "√Ö"; $extendedChar = 1; last SWITCH;};
+          /39/ && do {$commandtoken = "√•"; $extendedChar = 1; last SWITCH;};
+          /3a/ && do {$commandtoken = "√ò"; $extendedChar = 1; last SWITCH;};
+          /3b/ && do {$commandtoken = "√∏"; $extendedChar = 1; last SWITCH;};
           /3c/ && do {$commandtoken = "*"; $extendedChar = 1; last SWITCH;}; # {ul}
           /3d/ && do {$commandtoken = "*"; $extendedChar = 1; last SWITCH;}; # {ur}
           /3e/ && do {$commandtoken = "*"; $extendedChar = 1; last SWITCH;}; # {ll}
@@ -1741,12 +1854,12 @@ sub disCommand {
                         # }
                         clearScreen();
                       }
-                      $ccMode = "pop-on"; 
+                      $ccMode = "pop-on";
                       last SWITCH;}; # {RCL}
           /21/ && do {$col--; last SWITCH;}; # {BS}
           /24/ && do {for (my $_col = $col - 1; $_col < 16; $_col++) {
                         $character[$row][$_col] = "\x00";
-                      }; last SWITCH;}; # {DER}                          
+                      }; last SWITCH;}; # {DER}
           /25/ && do {$mode = "CC"; $ccMode = "roll-up";
                       if ($ruHeight != 2) {
                         $endTime = timecodeof($frames + $offset + $numwords);
@@ -1997,12 +2110,12 @@ sub disCommand {
                           outputSubtitle($subtitleNumber++, $startTime, $endTime, $subtitle);
                         }
                       }
-                      $ccMode = "pop-on"; 
+                      $ccMode = "pop-on";
                       last SWITCH;}; # {RCL}
           /21/ && do {$col--; last SWITCH;}; # {BS}
           /24/ && do {for (my $_col = $col - 1; $_col < 16; $_col++) {
                         $character[$row][$_col] = "\x00";
-                      }; last SWITCH;}; # {DER}                          
+                      }; last SWITCH;}; # {DER}
           /25/ && do {$mode = "CC"; $ccMode = "roll-up"; last SWITCH;}; # {RU2}
           /26/ && do {$mode = "CC"; $ccMode = "roll-up"; last SWITCH;}; # {RU3}
           /27/ && do {$mode = "CC"; $ccMode = "roll-up"; last SWITCH;}; # {RU4}
@@ -2559,14 +2672,14 @@ sub disCommand {
         /35/ && do {$commandtoken = "{cent}"; last SWITCH;};
         /36/ && do {$commandtoken = "{L}"; last SWITCH;};
         /37/ && do {$commandtoken = "{note}"; last SWITCH;};
-        /38/ && do {$commandtoken = "{‡}"; last SWITCH;};
+        /38/ && do {$commandtoken = "{√†}"; last SWITCH;};
         /39/ && do {$commandtoken = "{ }"; last SWITCH;};
-        /3a/ && do {$commandtoken = "{Ë}"; last SWITCH;};
-        /3b/ && do {$commandtoken = "{‚}"; last SWITCH;};
-        /3c/ && do {$commandtoken = "{Í}"; last SWITCH;};
-        /3d/ && do {$commandtoken = "{Ó}"; last SWITCH;};
-        /3e/ && do {$commandtoken = "{Ù}"; last SWITCH;};
-        /3f/ && do {$commandtoken = "{˚}"; last SWITCH;};
+        /3a/ && do {$commandtoken = "{√®}"; last SWITCH;};
+        /3b/ && do {$commandtoken = "{√¢}"; last SWITCH;};
+        /3c/ && do {$commandtoken = "{√™}"; last SWITCH;};
+        /3d/ && do {$commandtoken = "{√Æ}"; last SWITCH;};
+        /3e/ && do {$commandtoken = "{√¥}"; last SWITCH;};
+        /3f/ && do {$commandtoken = "{√ª}"; last SWITCH;};
         /40/ && do {$commandtoken = "{01Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{01WhU}"; last SWITCH;};
         /42/ && do {$commandtoken = "{01Gr}"; last SWITCH;};
@@ -2635,12 +2748,12 @@ sub disCommand {
     };
     /12/ && do {
       for ($lo) {
-        /20/ && do {$commandtoken = "{¡}"; last SWITCH;};
-        /21/ && do {$commandtoken = "{…}"; last SWITCH;};
-        /22/ && do {$commandtoken = "{”}"; last SWITCH;};
-        /23/ && do {$commandtoken = "{⁄}"; last SWITCH;};
-        /24/ && do {$commandtoken = "{‹}"; last SWITCH;};
-        /25/ && do {$commandtoken = "{¸}"; last SWITCH;};
+        /20/ && do {$commandtoken = "{√Å}"; last SWITCH;};
+        /21/ && do {$commandtoken = "{√â}"; last SWITCH;};
+        /22/ && do {$commandtoken = "{√ì}"; last SWITCH;};
+        /23/ && do {$commandtoken = "{√ö}"; last SWITCH;};
+        /24/ && do {$commandtoken = "{√ú}"; last SWITCH;};
+        /25/ && do {$commandtoken = "{√º}"; last SWITCH;};
         /26/ && do {$commandtoken = "{lsq}"; last SWITCH;};
         /27/ && do {$commandtoken = "{!}"; last SWITCH;};
         /28/ && do {$commandtoken = "{*}"; last SWITCH;};
@@ -2651,20 +2764,20 @@ sub disCommand {
         /2d/ && do {$commandtoken = "{.}"; last SWITCH;};
         /2e/ && do {$commandtoken = "{rdq}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{ldq}"; last SWITCH;};
-        /30/ && do {$commandtoken = "{¿}"; last SWITCH;};
-        /31/ && do {$commandtoken = "{¬}"; last SWITCH;};
-        /32/ && do {$commandtoken = "{«}"; last SWITCH;};
-        /33/ && do {$commandtoken = "{»}"; last SWITCH;};
-        /34/ && do {$commandtoken = "{ }"; last SWITCH;};
-        /35/ && do {$commandtoken = "{À}"; last SWITCH;};
-        /36/ && do {$commandtoken = "{Î}"; last SWITCH;};
-        /37/ && do {$commandtoken = "{Œ}"; last SWITCH;};
-        /38/ && do {$commandtoken = "{œ}"; last SWITCH;};
-        /39/ && do {$commandtoken = "{Ô}"; last SWITCH;};
-        /3a/ && do {$commandtoken = "{‘}"; last SWITCH;};
-        /3b/ && do {$commandtoken = "{Ÿ}"; last SWITCH;};
-        /3c/ && do {$commandtoken = "{˘}"; last SWITCH;};
-        /3d/ && do {$commandtoken = "{€}"; last SWITCH;};
+        /30/ && do {$commandtoken = "{√Ä}"; last SWITCH;};
+        /31/ && do {$commandtoken = "{√Ç}"; last SWITCH;};
+        /32/ && do {$commandtoken = "{√á}"; last SWITCH;};
+        /33/ && do {$commandtoken = "{√à}"; last SWITCH;};
+        /34/ && do {$commandtoken = "{√ä}"; last SWITCH;};
+        /35/ && do {$commandtoken = "{√ã}"; last SWITCH;};
+        /36/ && do {$commandtoken = "{√´}"; last SWITCH;};
+        /37/ && do {$commandtoken = "{√é}"; last SWITCH;};
+        /38/ && do {$commandtoken = "{√è}"; last SWITCH;};
+        /39/ && do {$commandtoken = "{√Ø}"; last SWITCH;};
+        /3a/ && do {$commandtoken = "{√î}"; last SWITCH;};
+        /3b/ && do {$commandtoken = "{√ô}"; last SWITCH;};
+        /3c/ && do {$commandtoken = "{√π}"; last SWITCH;};
+        /3d/ && do {$commandtoken = "{√õ}"; last SWITCH;};
         /3e/ && do {$commandtoken = "{<<}"; last SWITCH;};
         /3f/ && do {$commandtoken = "{>>}"; last SWITCH;};
         /40/ && do {$commandtoken = "{03Wh}"; last SWITCH;};
@@ -2735,15 +2848,15 @@ sub disCommand {
     };
     /13/ && do {
       for ($lo) {
-        /20/ && do {$commandtoken = "{√}"; last SWITCH;};
-        /21/ && do {$commandtoken = "{„}"; last SWITCH;};
-        /22/ && do {$commandtoken = "{Õ}"; last SWITCH;};
-        /23/ && do {$commandtoken = "{Ã}"; last SWITCH;};
-        /24/ && do {$commandtoken = "{Ï}"; last SWITCH;};
-        /25/ && do {$commandtoken = "{“}"; last SWITCH;};
-        /26/ && do {$commandtoken = "{Ú}"; last SWITCH;};
-        /27/ && do {$commandtoken = "{’}"; last SWITCH;};
-        /28/ && do {$commandtoken = "{ı}"; last SWITCH;};
+        /20/ && do {$commandtoken = "{√É}"; last SWITCH;};
+        /21/ && do {$commandtoken = "{√£}"; last SWITCH;};
+        /22/ && do {$commandtoken = "{√ç}"; last SWITCH;};
+        /23/ && do {$commandtoken = "{√å}"; last SWITCH;};
+        /24/ && do {$commandtoken = "{√¨}"; last SWITCH;};
+        /25/ && do {$commandtoken = "{√í}"; last SWITCH;};
+        /26/ && do {$commandtoken = "{√≤}"; last SWITCH;};
+        /27/ && do {$commandtoken = "{√ï}"; last SWITCH;};
+        /28/ && do {$commandtoken = "{√µ}"; last SWITCH;};
         /29/ && do {$commandtoken = "{rb}"; last SWITCH;};
         /2a/ && do {$commandtoken = "{lb}"; last SWITCH;};
         /2b/ && do {$commandtoken = "{\}"; last SWITCH;};
@@ -2751,18 +2864,18 @@ sub disCommand {
         /2d/ && do {$commandtoken = "{_}"; last SWITCH;};
         /2e/ && do {$commandtoken = "{|}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{~}"; last SWITCH;};
-        /30/ && do {$commandtoken = "{ƒ}"; last SWITCH;};
-        /31/ && do {$commandtoken = "{‰}"; last SWITCH;};
-        /32/ && do {$commandtoken = "{÷}"; last SWITCH;};
-        /33/ && do {$commandtoken = "{ˆ}"; last SWITCH;};
-        /34/ && do {$commandtoken = "{ﬂ}"; last SWITCH;};
+        /30/ && do {$commandtoken = "{√Ñ}"; last SWITCH;};
+        /31/ && do {$commandtoken = "{√§}"; last SWITCH;};
+        /32/ && do {$commandtoken = "{√ñ}"; last SWITCH;};
+        /33/ && do {$commandtoken = "{√∂}"; last SWITCH;};
+        /34/ && do {$commandtoken = "{√ü}"; last SWITCH;};
         /35/ && do {$commandtoken = "{yen}"; last SWITCH;};
         /36/ && do {$commandtoken = "{x}"; last SWITCH;};
         /37/ && do {$commandtoken = "{bar}"; last SWITCH;};
-        /38/ && do {$commandtoken = "{≈}"; last SWITCH;};
-        /39/ && do {$commandtoken = "{Â}"; last SWITCH;};
-        /3a/ && do {$commandtoken = "{ÿ}"; last SWITCH;};
-        /3b/ && do {$commandtoken = "{¯}"; last SWITCH;};
+        /38/ && do {$commandtoken = "{√Ö}"; last SWITCH;};
+        /39/ && do {$commandtoken = "{√•}"; last SWITCH;};
+        /3a/ && do {$commandtoken = "{√ò}"; last SWITCH;};
+        /3b/ && do {$commandtoken = "{√∏}"; last SWITCH;};
         /3c/ && do {$commandtoken = "{ul}"; last SWITCH;};
         /3d/ && do {$commandtoken = "{ur}"; last SWITCH;};
         /3e/ && do {$commandtoken = "{ll}"; last SWITCH;};
@@ -3226,14 +3339,14 @@ sub disCommand {
         /35/ && do {$commandtoken = "{cent}"; last SWITCH;};
         /36/ && do {$commandtoken = "{L}"; last SWITCH;};
         /37/ && do {$commandtoken = "{note}"; last SWITCH;};
-        /38/ && do {$commandtoken = "{‡}"; last SWITCH;};
+        /38/ && do {$commandtoken = "{√†}"; last SWITCH;};
         /39/ && do {$commandtoken = "{ }"; last SWITCH;};
-        /3a/ && do {$commandtoken = "{Ë}"; last SWITCH;};
-        /3b/ && do {$commandtoken = "{‚}"; last SWITCH;};
-        /3c/ && do {$commandtoken = "{Í}"; last SWITCH;};
-        /3d/ && do {$commandtoken = "{Ó}"; last SWITCH;};
-        /3e/ && do {$commandtoken = "{Ù}"; last SWITCH;};
-        /3f/ && do {$commandtoken = "{˚}"; last SWITCH;};
+        /3a/ && do {$commandtoken = "{√®}"; last SWITCH;};
+        /3b/ && do {$commandtoken = "{√¢}"; last SWITCH;};
+        /3c/ && do {$commandtoken = "{√™}"; last SWITCH;};
+        /3d/ && do {$commandtoken = "{√Æ}"; last SWITCH;};
+        /3e/ && do {$commandtoken = "{√¥}"; last SWITCH;};
+        /3f/ && do {$commandtoken = "{√ª}"; last SWITCH;};
         /40/ && do {$commandtoken = "{01Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{01WhU}"; last SWITCH;};
         /42/ && do {$commandtoken = "{01Gr}"; last SWITCH;};
@@ -3302,12 +3415,12 @@ sub disCommand {
     };
     /1a/ && do {
       for ($lo) {
-        /20/ && do {$commandtoken = "{¡}"; last SWITCH;};
-        /21/ && do {$commandtoken = "{…}"; last SWITCH;};
-        /22/ && do {$commandtoken = "{”}"; last SWITCH;};
-        /23/ && do {$commandtoken = "{⁄}"; last SWITCH;};
-        /24/ && do {$commandtoken = "{‹}"; last SWITCH;};
-        /25/ && do {$commandtoken = "{¸}"; last SWITCH;};
+        /20/ && do {$commandtoken = "{√Å}"; last SWITCH;};
+        /21/ && do {$commandtoken = "{√â}"; last SWITCH;};
+        /22/ && do {$commandtoken = "{√ì}"; last SWITCH;};
+        /23/ && do {$commandtoken = "{√ö}"; last SWITCH;};
+        /24/ && do {$commandtoken = "{√ú}"; last SWITCH;};
+        /25/ && do {$commandtoken = "{√º}"; last SWITCH;};
         /26/ && do {$commandtoken = "{lsq}"; last SWITCH;};
         /27/ && do {$commandtoken = "{!}"; last SWITCH;};
         /28/ && do {$commandtoken = "{*}"; last SWITCH;};
@@ -3316,22 +3429,22 @@ sub disCommand {
         /2b/ && do {$commandtoken = "{C}"; last SWITCH;};
         /2c/ && do {$commandtoken = "{sm}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{.}"; last SWITCH;};
-        /2e/ && do {$commandtoken = "{rdq}"; last SWITCH;};
-        /2f/ && do {$commandtoken = "{ldq}"; last SWITCH;};
-        /30/ && do {$commandtoken = "{¿}"; last SWITCH;};
-        /31/ && do {$commandtoken = "{¬}"; last SWITCH;};
-        /32/ && do {$commandtoken = "{«}"; last SWITCH;};
-        /33/ && do {$commandtoken = "{»}"; last SWITCH;};
-        /34/ && do {$commandtoken = "{ }"; last SWITCH;};
-        /35/ && do {$commandtoken = "{À}"; last SWITCH;};
-        /36/ && do {$commandtoken = "{Î}"; last SWITCH;};
-        /37/ && do {$commandtoken = "{Œ}"; last SWITCH;};
-        /38/ && do {$commandtoken = "{œ}"; last SWITCH;};
-        /39/ && do {$commandtoken = "{Ô}"; last SWITCH;};
-        /3a/ && do {$commandtoken = "{‘}"; last SWITCH;};
-        /3b/ && do {$commandtoken = "{Ÿ}"; last SWITCH;};
-        /3c/ && do {$commandtoken = "{˘}"; last SWITCH;};
-        /3d/ && do {$commandtoken = "{€}"; last SWITCH;};
+        /2e/ && do {$commandtoken = "{ldq}"; last SWITCH;};
+        /2f/ && do {$commandtoken = "{rdq}"; last SWITCH;};
+        /30/ && do {$commandtoken = "{√Ä}"; last SWITCH;};
+        /31/ && do {$commandtoken = "{√Ç}"; last SWITCH;};
+        /32/ && do {$commandtoken = "{√á}"; last SWITCH;};
+        /33/ && do {$commandtoken = "{√à}"; last SWITCH;};
+        /34/ && do {$commandtoken = "{√ä}"; last SWITCH;};
+        /35/ && do {$commandtoken = "{√ã}"; last SWITCH;};
+        /36/ && do {$commandtoken = "{√´}"; last SWITCH;};
+        /37/ && do {$commandtoken = "{√é}"; last SWITCH;};
+        /38/ && do {$commandtoken = "{√è}"; last SWITCH;};
+        /39/ && do {$commandtoken = "{√Ø}"; last SWITCH;};
+        /3a/ && do {$commandtoken = "{√î}"; last SWITCH;};
+        /3b/ && do {$commandtoken = "{√ô}"; last SWITCH;};
+        /3c/ && do {$commandtoken = "{√π}"; last SWITCH;};
+        /3d/ && do {$commandtoken = "{√õ}"; last SWITCH;};
         /3e/ && do {$commandtoken = "{<<}"; last SWITCH;};
         /3f/ && do {$commandtoken = "{>>}"; last SWITCH;};
         /40/ && do {$commandtoken = "{03Wh}"; last SWITCH;};
@@ -3402,15 +3515,15 @@ sub disCommand {
     };
     /1b/ && do {
       for ($lo) {
-        /20/ && do {$commandtoken = "{√}"; last SWITCH;};
-        /21/ && do {$commandtoken = "{„}"; last SWITCH;};
-        /22/ && do {$commandtoken = "{Õ}"; last SWITCH;};
-        /23/ && do {$commandtoken = "{Ã}"; last SWITCH;};
-        /24/ && do {$commandtoken = "{Ï}"; last SWITCH;};
-        /25/ && do {$commandtoken = "{“}"; last SWITCH;};
-        /26/ && do {$commandtoken = "{Ú}"; last SWITCH;};
-        /27/ && do {$commandtoken = "{’}"; last SWITCH;};
-        /28/ && do {$commandtoken = "{ı}"; last SWITCH;};
+        /20/ && do {$commandtoken = "{√É}"; last SWITCH;};
+        /21/ && do {$commandtoken = "{√£}"; last SWITCH;};
+        /22/ && do {$commandtoken = "{√ç}"; last SWITCH;};
+        /23/ && do {$commandtoken = "{√å}"; last SWITCH;};
+        /24/ && do {$commandtoken = "{√¨}"; last SWITCH;};
+        /25/ && do {$commandtoken = "{√í}"; last SWITCH;};
+        /26/ && do {$commandtoken = "{√≤}"; last SWITCH;};
+        /27/ && do {$commandtoken = "{√ï}"; last SWITCH;};
+        /28/ && do {$commandtoken = "{√µ}"; last SWITCH;};
         /29/ && do {$commandtoken = "{rb}"; last SWITCH;};
         /2a/ && do {$commandtoken = "{lb}"; last SWITCH;};
         /2b/ && do {$commandtoken = "{\}"; last SWITCH;};
@@ -3418,18 +3531,18 @@ sub disCommand {
         /2d/ && do {$commandtoken = "{_}"; last SWITCH;};
         /2e/ && do {$commandtoken = "{|}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{~}"; last SWITCH;};
-        /30/ && do {$commandtoken = "{ƒ}"; last SWITCH;};
-        /31/ && do {$commandtoken = "{‰}"; last SWITCH;};
-        /32/ && do {$commandtoken = "{÷}"; last SWITCH;};
-        /33/ && do {$commandtoken = "{ˆ}"; last SWITCH;};
-        /34/ && do {$commandtoken = "{ﬂ}"; last SWITCH;};
+        /30/ && do {$commandtoken = "{√Ñ}"; last SWITCH;};
+        /31/ && do {$commandtoken = "{√§}"; last SWITCH;};
+        /32/ && do {$commandtoken = "{√ñ}"; last SWITCH;};
+        /33/ && do {$commandtoken = "{√∂}"; last SWITCH;};
+        /34/ && do {$commandtoken = "{√ü}"; last SWITCH;};
         /35/ && do {$commandtoken = "{yen}"; last SWITCH;};
         /36/ && do {$commandtoken = "{x}"; last SWITCH;};
         /37/ && do {$commandtoken = "{bar}"; last SWITCH;};
-        /38/ && do {$commandtoken = "{≈}"; last SWITCH;};
-        /39/ && do {$commandtoken = "{Â}"; last SWITCH;};
-        /3a/ && do {$commandtoken = "{ÿ}"; last SWITCH;};
-        /3b/ && do {$commandtoken = "{¯}"; last SWITCH;};
+        /38/ && do {$commandtoken = "{√Ö}"; last SWITCH;};
+        /39/ && do {$commandtoken = "{√•}"; last SWITCH;};
+        /3a/ && do {$commandtoken = "{√ò}"; last SWITCH;};
+        /3b/ && do {$commandtoken = "{√∏}"; last SWITCH;};
         /3c/ && do {$commandtoken = "{ul}"; last SWITCH;};
         /3d/ && do {$commandtoken = "{ur}"; last SWITCH;};
         /3e/ && do {$commandtoken = "{ll}"; last SWITCH;};
@@ -3818,7 +3931,7 @@ sub disChar {
     return "";
   }
   my $byte = sprintf ("%02x", shift(@_));
-  my $char = "£"; # placeholder for failed match
+  my $char = "¬£"; # placeholder for failed match
   # ITV uses a slightly different character set
   SWITCH: for ($byte) {
     /00/ && do {$char = "_"; last SWITCH;};
@@ -3833,7 +3946,7 @@ sub disChar {
     /28/ && do {$char = "("; last SWITCH;};
     /29/ && do {$char = ")"; last SWITCH;};
     /2a/ && do {
-      if ($mode eq "ITV") {$char = "*";} else {$char = "·";}
+      if ($mode eq "ITV") {$char = "*";} else {$char = "√°";}
       last SWITCH;};
     /2b/ && do {$char = "+"; last SWITCH;};
     /2c/ && do {$char = ","; last SWITCH;};
@@ -3885,17 +3998,17 @@ sub disChar {
     /5a/ && do {$char = "Z"; last SWITCH;};
     /5b/ && do {$char = "["; last SWITCH;};
     /5c/ && do {
-      if ($mode eq "ITV") {$char = "\\";} else {$char = "È";}
+      if ($mode eq "ITV") {$char = "\\";} else {$char = "√©";}
       last SWITCH;};
     /5d/ && do {$char = "]"; last SWITCH;};
     /5e/ && do {
-      if ($mode eq "ITV") {$char = "^";} else {$char = "Ì";}
+      if ($mode eq "ITV") {$char = "^";} else {$char = "√≠";}
       last SWITCH;};
     /5f/ && do {
-      if ($mode eq "ITV") {$char = "_";} else {$char = "Û";}
+      if ($mode eq "ITV") {$char = "_";} else {$char = "√≥";}
       last SWITCH;};
     /60/ && do {
-      if ($mode eq "ITV") {$char = "`";} else {$char = "˙";}
+      if ($mode eq "ITV") {$char = "`";} else {$char = "√∫";}
       last SWITCH;};
     /61/ && do {$char = "a"; last SWITCH;};
     /62/ && do {$char = "b"; last SWITCH;};
@@ -3924,22 +4037,22 @@ sub disChar {
     /79/ && do {$char = "y"; last SWITCH;};
     /7a/ && do {$char = "z"; last SWITCH;};
     /7b/ && do {
-      if ($mode eq "ITV") {$char = "{";} else {$char = "Á";}
+      if ($mode eq "ITV") {$char = "{";} else {$char = "√ß";}
       last SWITCH;};
     /7c/ && do {
-      if ($mode eq "ITV") {$char = "|";} else {$char = "˜";}
+      if ($mode eq "ITV") {$char = "|";} else {$char = "√∑";}
       last SWITCH;};
     /7d/ && do {
-      if ($mode eq "ITV") {$char = "}";} else {$char = "—";}
+      if ($mode eq "ITV") {$char = "}";} else {$char = "√ë";}
       last SWITCH;};
     /7e/ && do {
-      if ($mode eq "ITV") {$char = "~";} else {$char = "Ò";}
+      if ($mode eq "ITV") {$char = "~";} else {$char = "√±";}
       last SWITCH;};
     /7f/ && do {
-      if ($mode eq "ITV") {$char = "£";} else {$char = "|";}
+      if ($mode eq "ITV") {$char = "¬£";} else {$char = "|";}
       last SWITCH;};
   }
-  if (($convert) and (($byte eq "00") or ($char eq "£"))) {
+  if (($convert) and (($byte eq "00") or ($char eq "¬£"))) {
     $char = "";
   }
   return $char;
@@ -3972,7 +4085,7 @@ sub disXDS {
     /^14$/ && do {$class = "Uc"; last SWITCH;};
   }
   $xds = $xds." ".$class;
-  
+
   # if type byte is not defined for class, just output it
   if (($class =~ "C.") or ($class =~ "F.")) {
     SWITCH: for ($xdsList[1]) {
@@ -4026,10 +4139,10 @@ sub disXDS {
   }
 
   $xds = $xds." ".$type;
-  
+
   my @Month = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec");
-  my @Language = ("Unknown", "English", "EspaÒol", "FranÁais",
+  my @Language = ("Unknown", "English", "Espa√±ol", "Fran√ßais",
                   "Deutsch", "Italiano", "Other", "None");
 
   my $typeFound = 0; # flag to find undefined types
@@ -4067,8 +4180,8 @@ sub disXDS {
       $xds = $xds." ".sprintf("%02d", $dy);
     }
     if ((scalar @xdsList + $XDSPosition{$type}) > 6) {
-      # byte 6 is 0x0f, to announce checksum 
-      my $checksum = oddParity($xdsList[7 - $XDSPosition{$type}]); 
+      # byte 6 is 0x0f, to announce checksum
+      my $checksum = oddParity($xdsList[7 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4076,7 +4189,7 @@ sub disXDS {
       $XDSPosition{$type} = scalar(@xdsList) - 2;
     }
   }
-  
+
   if ($type eq "PL") { # Program Length/Time in Show
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       my $hr = $xdsList[3 - $XDSPosition{$type}] - 64; # byte 3 is hours long
@@ -4097,20 +4210,20 @@ sub disXDS {
       if ($xdsList[6 - $XDSPosition{$type}] != 15) {
         $checksumByte += 2;
         # byte 6 is seconds elapsed, in 8 second increments
-        my $se = $xdsList[6 - $XDSPosition{$type}] - 64; 
+        my $se = $xdsList[6 - $XDSPosition{$type}] - 64;
         $xds = $xds.":".sprintf("%02d", $se);
       }
     }
     if ((scalar @xdsList + $XDSPosition{$type}) > $checksumByte - 1) {
-      # last byte (5, 7, or 9) is checksum 
-      my $checksum = oddParity($xdsList[$checksumByte - $XDSPosition{$type}]); 
+      # last byte (5, 7, or 9) is checksum
+      my $checksum = oddParity($xdsList[$checksumByte - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
     } else {
       # if checksum is not reached, this is an interrupted packet
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "PN") { # Program Name
     $xds = $xds." ";
     my $position = 2;
@@ -4124,7 +4237,7 @@ sub disXDS {
       }
     }
     if ((scalar @xdsList > $position) && ($xdsList[$position] == 15)) {
-      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum 
+      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4132,7 +4245,7 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "PT") { # Program Types
     my @ProgramTypes =
      ("Education", "Entertainment", "Movie", "News",
@@ -4167,7 +4280,7 @@ sub disXDS {
       }
     }
     if ((scalar @xdsList > $position) && ($xdsList[$position] == 15)) {
-      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum 
+      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4175,7 +4288,7 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "PR") { # Program Rating (V-Chip)
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       # advisories, which only apply to ratingSystem TPG
@@ -4188,9 +4301,9 @@ sub disXDS {
                              #  Motion Picture Association of America ("MPAA"),
                              #  Television Parental Guidelines ("TPG"),
                              #  Canada English ("CE") or
-                             #  Canada FranÁais ("CF")
+                             #  Canada Fran√ßais ("CF")
       # rating can be in either byte 2 or 3, depending on ratingSystem
-      my $byte = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $byte = $xdsList[2 - $XDSPosition{$type}] - 64;
       if ($byte == 56) {
         $ratingSystem = "CF";
       }
@@ -4244,40 +4357,40 @@ sub disXDS {
       }
     }
     if ((scalar @xdsList + $XDSPosition{$type}) > 4) {
-      # byte 4 is 0x0f, to announce checksum 
-      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]); 
+      # byte 4 is 0x0f, to announce checksum
+      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "AS") { # Audio Streams
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       my @StreamType = ("Unknown", "Mono", "Simulated", "Stereo",
                         "Surround", "Data", "Other", "None");
       # byte 2 describes primary audio stream
-      my $byte = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $byte = $xdsList[2 - $XDSPosition{$type}] - 64;
       $xds = $xds." ".$StreamType[$byte % 8];
       $xds = $xds." ".$Language[sprintf("%d", ($byte / 8))];
       @StreamType = ("Unknown", "Mono", "DAS", "Non-Program",
                      "FX", "Data", "Other", "None");
       # byte 3 describes secondary audio stream
-      $byte = $xdsList[3 - $XDSPosition{$type}] - 64; 
+      $byte = $xdsList[3 - $XDSPosition{$type}] - 64;
       $xds = $xds." ".$StreamType[$byte % 8];
       $xds = $xds." ".$Language[sprintf("%d", ($byte / 8))];
     }
     if ((scalar @xdsList + $XDSPosition{$type}) > 4) {
-      # byte 4 is 0x0f, to announce checksum 
-      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]); 
+      # byte 4 is 0x0f, to announce checksum
+      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "CS") { # Caption Streams
     my $position = 2;
     if ((scalar @xdsList + $XDSPosition{$type}) > 2) {
@@ -4294,15 +4407,15 @@ sub disXDS {
       }
     }
     if ((scalar @xdsList) > $position) {
-      # last byte is checksum 
-      my $checksum = oddParity($xdsList[$position + 1]); 
+      # last byte is checksum
+      my $checksum = oddParity($xdsList[$position + 1]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "CG") { # CGMS
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       my $dataFormat = "D"; # format is digital ("D") or analog ("A")
@@ -4311,7 +4424,7 @@ sub disXDS {
                     #  Macrovision and 2-line Colorstripe ("2"), or
                     #  Macrovision and 4-line Colorstripe ("4")
       # all parts of CGMS in byte 2
-      my $byte = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $byte = $xdsList[2 - $XDSPosition{$type}] - 64;
       if ($byte >= 24) {
         $sgms = "0";
         $byte -= 24;
@@ -4339,24 +4452,24 @@ sub disXDS {
       # byte 3 is filler
     }
     if ((scalar @xdsList + $XDSPosition{$type}) > 4) {
-      # byte 4 is 0x0f, to announce checksum 
-      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]); 
+      # byte 4 is 0x0f, to announce checksum
+      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "AR") { # Aspect Ratio
     my $checksumPosition;
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       # byte 2 is number of scanlines between top of visible screen
       #  and top of active video area
-      my $top = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $top = $xdsList[2 - $XDSPosition{$type}] - 64;
       # byte 3 is number of scanlines between
       #  bottom of active video area and bottom of visible screen
-      my $bottom = $xdsList[3 - $XDSPosition{$type}] - 64; 
+      my $bottom = $xdsList[3 - $XDSPosition{$type}] - 64;
       $xds = $xds." ".$top." ".$bottom;
       $checksumPosition = 5;
     }
@@ -4370,15 +4483,15 @@ sub disXDS {
       $xds = $xds." ".$ratio;
     }
     if ((scalar @xdsList + $XDSPosition{$type}) > $checksumPosition - 1) {
-      # last byte is checksum 
-      my $checksum = oddParity($xdsList[$checksumPosition - $XDSPosition{$type}]); 
+      # last byte is checksum
+      my $checksum = oddParity($xdsList[$checksumPosition - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "PD") {  # Program Data
     my $position = 2;
     my $i;
@@ -4453,8 +4566,8 @@ sub disXDS {
       }
     }
     if ((scalar @xdsList + $XDSPosition{$type}) > $position) {
-      # last byte is checksum 
-      my $checksum = oddParity($xdsList[$position + 1 - $XDSPosition{$type}]); 
+      # last byte is checksum
+      my $checksum = oddParity($xdsList[$position + 1 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4488,7 +4601,7 @@ sub disXDS {
       my @StreamType = ("Unknown", "Mono", "Simulated", "Stereo",
                         "Surround", "Data", "Other", "None");
       # primary audio stream
-      my $byte = $xdsList[6 - $XDSPosition{$type}] - 64;   
+      my $byte = $xdsList[6 - $XDSPosition{$type}] - 64;
       $xds = $xds." ".$StreamType[$byte % 8];
       $xds = $xds." ".$Language[sprintf("%d", ($byte / 8))];
       @StreamType = ("Unknown", "Mono", "DAS", "Non-Program",
@@ -4539,8 +4652,8 @@ sub disXDS {
     }
     $position += 2;
     if ((scalar @xdsList + $XDSPosition{$type}) > 16) {
-      # last byte is checksum 
-      my $checksum = oddParity($xdsList[17 - $XDSPosition{$type}]); 
+      # last byte is checksum
+      my $checksum = oddParity($xdsList[17 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4560,7 +4673,7 @@ sub disXDS {
       }
     }
     if ((scalar @xdsList > $position) && ($xdsList[$position] == 15)) {
-      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum 
+      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4568,7 +4681,7 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "NN") { # Network Name
     $xds = $xds." ";
     my $position = 2;
@@ -4581,7 +4694,7 @@ sub disXDS {
       }
     }
     if ((scalar @xdsList >= $position) && ($xdsList[$position] == 15)) {
-      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum 
+      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4589,7 +4702,7 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "NC") { # Network Call Letters
     $xds = $xds." ";
     my $position = 2;
@@ -4618,8 +4731,8 @@ sub disXDS {
     }
     if (($xdsList[$position - $XDSPosition{$type}] == 15) and
        (scalar @xdsList + $XDSPosition{$type} > $position)) {
-      # last byte is checksum 
-      my $checksum = oddParity($xdsList[$position + 1 - $XDSPosition{$type}]); 
+      # last byte is checksum
+      my $checksum = oddParity($xdsList[$position + 1 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4627,18 +4740,18 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "TD") { # Channel Tape Delay
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       # byte 3 is hours tape delayed
-      my $hr = $xdsList[3 - $XDSPosition{$type}] - 64; 
+      my $hr = $xdsList[3 - $XDSPosition{$type}] - 64;
       # byte 2 is minutes tape delayed
-      my $mi = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $mi = $xdsList[2 - $XDSPosition{$type}] - 64;
       $xds = $xds." ".sprintf("%02d:%02d", $hr, $mi);
     }
     if (scalar @xdsList + $XDSPosition{$type} > 4) {
-      # byte 5 is checksum 
-      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]); 
+      # byte 5 is checksum
+      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4646,7 +4759,7 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "TS") { # Transmission Signal Identification
     $xds = $xds." ";
     if (($XDSPosition{$type} + 2 < 6) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
@@ -4667,8 +4780,8 @@ sub disXDS {
       $xds = $xds.$digits;
     }
     if (scalar @xdsList + $XDSPosition{$type} > 6) {
-      # byte 7 is checksum 
-      my $checksum = oddParity($xdsList[7 - $XDSPosition{$type}]); 
+      # byte 7 is checksum
+      my $checksum = oddParity($xdsList[7 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4681,13 +4794,13 @@ sub disXDS {
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       my $d = "S"; # daylight savings time ("D") or standard time ("S")
       # byte 3 is hour (0 - 23)
-      my $hr = $xdsList[3 - $XDSPosition{$type}] - 64; 
+      my $hr = $xdsList[3 - $XDSPosition{$type}] - 64;
       if ($hr > 32) {
         $d = "D";
         $hr -= 32;
       }
       # byte 2 is minute (0 - 59)
-      my $mi = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $mi = $xdsList[2 - $XDSPosition{$type}] - 64;
       $xds = $xds." ".sprintf("%02d:%02d", $hr, $mi).$d;
     }
     if (($XDSPosition{$type} + 2 < 6) and (scalar @xdsList + $XDSPosition{$type} > 4)) {
@@ -4695,7 +4808,7 @@ sub disXDS {
       my $t = "S"; # tape is delayed ("T") or simulcast ("S")
       my $l = "A"; # this is February 29th ("L"eap day) or not ("A")
       # byte 5 is month
-      my $mo = $xdsList[5 - $XDSPosition{$type}] - 64; 
+      my $mo = $xdsList[5 - $XDSPosition{$type}] - 64;
       if ($mo > 32) {
         $z = "Z";
         $mo -= 32;
@@ -4705,7 +4818,7 @@ sub disXDS {
         $mo -= 16;
       }
       # byte 4 is day of month
-      my $dy = $xdsList[4 - $XDSPosition{$type}] - 64; 
+      my $dy = $xdsList[4 - $XDSPosition{$type}] - 64;
       if ($dy > 32) {
         $l = "L";
         $dy -= 32;
@@ -4715,16 +4828,16 @@ sub disXDS {
     }
     if (($XDSPosition{$type} + 2 < 8) and (scalar @xdsList + $XDSPosition{$type} > 6)) {
       # byte 7 is offset from 1990 (1990 - 64 = 1926)
-      my $yr = $xdsList[7 - $XDSPosition{$type}] + 1926; 
+      my $yr = $xdsList[7 - $XDSPosition{$type}] + 1926;
       $xds = $xds." ".$yr;
       my @Weekday = ("", "Sun", "Mon", "Tue",
                      "Wed", "Thu", "Fri", "Sat");
       # byte 6 is day of the week
-      $xds = $xds." ".$Weekday[$xdsList[6 - $XDSPosition{$type}] - 64]; 
+      $xds = $xds." ".$Weekday[$xdsList[6 - $XDSPosition{$type}] - 64];
     }
     if (scalar @xdsList + $XDSPosition{$type} > 8) {
-      # byte 9 is checksum 
-      my $checksum = oddParity($xdsList[9 - $XDSPosition{$type}]); 
+      # byte 9 is checksum
+      my $checksum = oddParity($xdsList[9 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4732,18 +4845,18 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "IC") { # Impulse Capture ID
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       my $d = "S"; # daylight savings time ("D") or standard time ("S")
       # byte 3 is hour (0 - 23)
-      my $hr = $xdsList[3 - $XDSPosition{$type}] - 64; 
+      my $hr = $xdsList[3 - $XDSPosition{$type}] - 64;
       if ($hr > 32) {
         $d = "D";
         $hr -= 32;
       }
       # byte 2 is minute (0 - 59)
-      my $mi = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $mi = $xdsList[2 - $XDSPosition{$type}] - 64;
       $xds = $xds." ".sprintf("%02d:%02d", $hr, $mi).$d;
     }
     if (($XDSPosition{$type} + 2 < 6) and (scalar @xdsList + $XDSPosition{$type} > 4)) {
@@ -4751,7 +4864,7 @@ sub disXDS {
       my $t = "S"; # tape is delayed ("T") or simulcast ("S")
       my $l = "A"; # this is February 29th ("L"eap day) or not ("A")
       # byte 5 is month
-      my $mo = $xdsList[5 - $XDSPosition{$type}] - 64; 
+      my $mo = $xdsList[5 - $XDSPosition{$type}] - 64;
       if ($mo > 32) {
         $z = "Z";
         $mo -= 32;
@@ -4761,7 +4874,7 @@ sub disXDS {
         $mo -= 16;
       }
       # byte 4 is day of month
-      my $dy = $xdsList[4 - $XDSPosition{$type}] - 64; 
+      my $dy = $xdsList[4 - $XDSPosition{$type}] - 64;
       if ($dy > 32) {
         $l = "L";
         $dy -= 32;
@@ -4771,14 +4884,14 @@ sub disXDS {
     }
     if (($XDSPosition{$type} + 2 < 8) and (scalar @xdsList + $XDSPosition{$type} > 6)) {
       # byte 7 is length of program in hours
-      my $hr = $xdsList[7 - $XDSPosition{$type}] - 64; 
+      my $hr = $xdsList[7 - $XDSPosition{$type}] - 64;
       # byte 6 is length of program in minutes
-      my $mi = $xdsList[6 - $XDSPosition{$type}] - 64; 
+      my $mi = $xdsList[6 - $XDSPosition{$type}] - 64;
       $xds = $xds." ".sprintf("%02d:%02d", $hr, $mi);
     }
     if (scalar @xdsList + $XDSPosition{$type} > 8) {
-      # byte 9 is checksum 
-      my $checksum = oddParity($xdsList[9 - $XDSPosition{$type}]); 
+      # byte 9 is checksum
+      my $checksum = oddParity($xdsList[9 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4786,7 +4899,7 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "SD") { # Supplemental Data Location
     my $position = 2;
     my $line = 0;
@@ -4802,8 +4915,8 @@ sub disXDS {
       $position++;
     }
     if (scalar @xdsList + $XDSPosition{$type} > $position) {
-      # last byte is checksum 
-      my $checksum = oddParity($xdsList[$position + 1]); 
+      # last byte is checksum
+      my $checksum = oddParity($xdsList[$position + 1]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4811,12 +4924,12 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "TZ") { # Local Time Zone
     my $d = "S"; # daylight savings time ("D") or standard time ("S")
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       # byte 2 is time zone
-      my $tz = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $tz = $xdsList[2 - $XDSPosition{$type}] - 64;
       if ($tz > 32) {
         $d = "D";
         $tz -= 32;
@@ -4826,8 +4939,8 @@ sub disXDS {
       # byte 3 is filler
     }
     if (scalar @xdsList + $XDSPosition{$type} > 4) {
-      # byte 5 is checksum 
-      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]); 
+      # byte 5 is checksum
+      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4835,18 +4948,18 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "OB") {  # Out of Band Channel
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
       # bytes 2 and 3 hold channel number
-      my $lo = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $lo = $xdsList[2 - $XDSPosition{$type}] - 64;
       my $hi = $xdsList[3 - $XDSPosition{$type}] - 64;
       my $channel = ($hi * 64) + $lo;
       $xds = $xds.sprintf(" %04d", $channel);
     }
     if (scalar @xdsList + $XDSPosition{$type} > 4) {
-      # byte 5 is checksum 
-      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]); 
+      # byte 5 is checksum
+      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4857,14 +4970,14 @@ sub disXDS {
 
   if ($type eq "CP") {   # Channel Map Pointer
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
-      my $lo = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $lo = $xdsList[2 - $XDSPosition{$type}] - 64;
       my $hi = $xdsList[3 - $XDSPosition{$type}] - 64;
       my $channel = ($hi * 64) + $lo;
       $xds = $xds.sprintf(" %04d", $channel);
     }
     if (scalar @xdsList + $XDSPosition{$type} > 4) {
-      # byte 5 is checksum 
-      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]); 
+      # byte 5 is checksum
+      my $checksum = oddParity($xdsList[5 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4875,7 +4988,7 @@ sub disXDS {
 
   if ($type eq "CH") {   # Channel Map Header
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
-      my $lo = $xdsList[2 - $XDSPosition{$type}] - 64; 
+      my $lo = $xdsList[2 - $XDSPosition{$type}] - 64;
       my $hi = $xdsList[3 - $XDSPosition{$type}] - 64;
       my $channels = ($hi * 64) + $lo;
       $xds = $xds.sprintf(" %04d", $channels);
@@ -4886,8 +4999,8 @@ sub disXDS {
       # skip filler byte 5
     }
     if (scalar @xdsList + $XDSPosition{$type} > 6) {
-      # byte 7 is checksum 
-      my $checksum = oddParity($xdsList[7 - $XDSPosition{$type}]); 
+      # byte 7 is checksum
+      my $checksum = oddParity($xdsList[7 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -4895,7 +5008,7 @@ sub disXDS {
       $XDSPosition{$type} = scalar @xdsList - 2;
     }
   }
-  
+
   if ($type eq "CM") {  # Channel Map
     my $position = 2;
     my $remapped = " ";
@@ -4943,7 +5056,7 @@ sub disXDS {
       }
     }
     if (scalar @xdsList + $XDSPosition{$type} > $position) {
-      my $checksum = oddParity($xdsList[$position + 1 - $XDSPosition{$type}]); 
+      my $checksum = oddParity($xdsList[$position + 1 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
       $XDSSum{$type} = 0;
@@ -4955,10 +5068,10 @@ sub disXDS {
         $XDSSum{$type} = 1;
       } else {
         $XDSSum{$type} = 0;
-      }	
+      }
     }
   }
-  
+
   if ($type eq "WB") {  # National Weather Service Bulletin
     my $position;
     if (($XDSPosition{$type} + 2 < 4) and (scalar @xdsList + $XDSPosition{$type} > 2)) {
@@ -4995,8 +5108,8 @@ sub disXDS {
       # Byte 15 is filler
     }
     if (scalar @xdsList + $XDSPosition{$type} > 14) {
-      # byte 15 is checksum 
-      my $checksum = oddParity($xdsList[15 - $XDSPosition{$type}]); 
+      # byte 15 is checksum
+      my $checksum = oddParity($xdsList[15 - $XDSPosition{$type}]);
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -5017,7 +5130,7 @@ sub disXDS {
       }
     }
     if (scalar @xdsList + $XDSPosition{$type} > $position) {
-      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum 
+      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -5026,14 +5139,14 @@ sub disXDS {
     }
   }
 
-  # if type is undefined, just output the bytes  
+  # if type is undefined, just output the bytes
   if ($typeDefined == 0) {
     my $position = 2;
     while (($xdsList[$position] != 15) and ($position < scalar @xdsList)) {
       $xds = $xds.sprintf(" %02x",oddParity($xdsList[$position++]));
     }
     if (scalar @xdsList + $XDSPosition{$type} > $position) {
-      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum 
+      my $checksum = oddParity($xdsList[$position + 1]); # last byte is checksum
       $xds = $xds." \\C".sprintf("%02x", $checksum);
       $XDSPosition{$type} = 0;
     } else {
@@ -5057,20 +5170,20 @@ sub asCommand {
     /^cent$/ && do {$word = ($channel =~ /[13]/) ? "91b5" : "19b5"; last SWITCH;};
     /^L$/ && do {$word = ($channel =~ /[13]/) ? "91b6" : "19b6"; last SWITCH;};
     /^note$/ && do {$word = ($channel =~ /[13]/) ? "9137" : "1937"; last SWITCH;};
-    /^‡$/ && do {$word = ($channel =~ /[13]/) ? "9138" : "1938"; last SWITCH;};
+    /^√†$/ && do {$word = ($channel =~ /[13]/) ? "9138" : "1938"; last SWITCH;};
     /^ $/ && do {$word = ($channel =~ /[13]/) ? "91b9" : "19b9"; last SWITCH;};
-    /^Ë$/ && do {$word = ($channel =~ /[13]/) ? "91ba" : "19ba"; last SWITCH;};
-    /^‚$/ && do {$word = ($channel =~ /[13]/) ? "913b" : "193b"; last SWITCH;};
-    /^Í$/ && do {$word = ($channel =~ /[13]/) ? "91bc" : "19bc"; last SWITCH;};
-    /^Ó$/ && do {$word = ($channel =~ /[13]/) ? "913d" : "193d"; last SWITCH;};
-    /^Ù$/ && do {$word = ($channel =~ /[13]/) ? "913e" : "193e"; last SWITCH;};
-    /^˚$/ && do {$word = ($channel =~ /[13]/) ? "91bf" : "19bf"; last SWITCH;};
-    /^¡$/ && do {$word = ($channel =~ /[13]/) ? "9220" : "1a20"; last SWITCH;};
-    /^…$/ && do {$word = ($channel =~ /[13]/) ? "92a1" : "1aa1"; last SWITCH;};
-    /^”$/ && do {$word = ($channel =~ /[13]/) ? "92a2" : "1aa2"; last SWITCH;};
-    /^⁄$/ && do {$word = ($channel =~ /[13]/) ? "9223" : "1a23"; last SWITCH;};
-    /^‹$/ && do {$word = ($channel =~ /[13]/) ? "92a4" : "1aa4"; last SWITCH;};
-    /^¸$/ && do {$word = ($channel =~ /[13]/) ? "9225" : "1a25"; last SWITCH;};
+    /^√®$/ && do {$word = ($channel =~ /[13]/) ? "91ba" : "19ba"; last SWITCH;};
+    /^√¢$/ && do {$word = ($channel =~ /[13]/) ? "913b" : "193b"; last SWITCH;};
+    /^√™$/ && do {$word = ($channel =~ /[13]/) ? "91bc" : "19bc"; last SWITCH;};
+    /^√Æ$/ && do {$word = ($channel =~ /[13]/) ? "913d" : "193d"; last SWITCH;};
+    /^√¥$/ && do {$word = ($channel =~ /[13]/) ? "913e" : "193e"; last SWITCH;};
+    /^√ª$/ && do {$word = ($channel =~ /[13]/) ? "91bf" : "19bf"; last SWITCH;};
+    /^√Å$/ && do {$word = ($channel =~ /[13]/) ? "9220" : "1a20"; last SWITCH;};
+    /^√â$/ && do {$word = ($channel =~ /[13]/) ? "92a1" : "1aa1"; last SWITCH;};
+    /^√ì$/ && do {$word = ($channel =~ /[13]/) ? "92a2" : "1aa2"; last SWITCH;};
+    /^√ö$/ && do {$word = ($channel =~ /[13]/) ? "9223" : "1a23"; last SWITCH;};
+    /^√ú$/ && do {$word = ($channel =~ /[13]/) ? "92a4" : "1aa4"; last SWITCH;};
+    /^√º$/ && do {$word = ($channel =~ /[13]/) ? "9225" : "1a25"; last SWITCH;};
     /^rsq$/ && do {$word = ($channel =~ /[13]/) ? "9226" : "1a26"; last SWITCH;};
     /^\!$/ && do {$word = ($channel =~ /[13]/) ? "92a7" : "1aa7"; last SWITCH;};
     /^\*$/ && do {$word = ($channel =~ /[13]/) ? "92a8" : "1aa8"; last SWITCH;};
@@ -5079,33 +5192,33 @@ sub asCommand {
     /^C$/ && do {$word = ($channel =~ /[13]/) ? "92ab" : "1aab"; last SWITCH;};
     /^sm$/ && do {$word = ($channel =~ /[13]/) ? "922c" : "1a2c"; last SWITCH;};
     /^\.$/ && do {$word = ($channel =~ /[13]/) ? "92ad" : "1aad"; last SWITCH;};
-    /^rdq$/ && do {$word = ($channel =~ /[13]/) ? "92ae" : "1aae"; last SWITCH;};
-    /^ldq$/ && do {$word = ($channel =~ /[13]/) ? "922f" : "1a2f"; last SWITCH;};
-    /^¿$/ && do {$word = ($channel =~ /[13]/) ? "92b0" : "1ab0"; last SWITCH;};
-    /^¬$/ && do {$word = ($channel =~ /[13]/) ? "9231" : "1a31"; last SWITCH;};
-    /^«$/ && do {$word = ($channel =~ /[13]/) ? "9232" : "1a32"; last SWITCH;};
-    /^»$/ && do {$word = ($channel =~ /[13]/) ? "92b3" : "1ab3"; last SWITCH;};
-    /^ $/ && do {$word = ($channel =~ /[13]/) ? "9234" : "1a34"; last SWITCH;};
-    /^À$/ && do {$word = ($channel =~ /[13]/) ? "92b5" : "1ab5"; last SWITCH;};
-    /^Î$/ && do {$word = ($channel =~ /[13]/) ? "92b6" : "1ab6"; last SWITCH;};
-    /^Œ$/ && do {$word = ($channel =~ /[13]/) ? "9237" : "1a37"; last SWITCH;};
-    /^œ$/ && do {$word = ($channel =~ /[13]/) ? "9238" : "1a38"; last SWITCH;};
-    /^Ô$/ && do {$word = ($channel =~ /[13]/) ? "92b9" : "1ab9"; last SWITCH;};
-    /^‘$/ && do {$word = ($channel =~ /[13]/) ? "92ba" : "1aba"; last SWITCH;};
-    /^Ÿ$/ && do {$word = ($channel =~ /[13]/) ? "923b" : "1a3b"; last SWITCH;};
-    /^˘$/ && do {$word = ($channel =~ /[13]/) ? "92bc" : "1abc"; last SWITCH;};
-    /^€$/ && do {$word = ($channel =~ /[13]/) ? "923d" : "1a3d"; last SWITCH;};
+    /^ldq$/ && do {$word = ($channel =~ /[13]/) ? "92ae" : "1aae"; last SWITCH;};
+    /^rdq$/ && do {$word = ($channel =~ /[13]/) ? "922f" : "1a2f"; last SWITCH;};
+    /^√Ä$/ && do {$word = ($channel =~ /[13]/) ? "92b0" : "1ab0"; last SWITCH;};
+    /^√Ç$/ && do {$word = ($channel =~ /[13]/) ? "9231" : "1a31"; last SWITCH;};
+    /^√á$/ && do {$word = ($channel =~ /[13]/) ? "9232" : "1a32"; last SWITCH;};
+    /^√à$/ && do {$word = ($channel =~ /[13]/) ? "92b3" : "1ab3"; last SWITCH;};
+    /^√ä$/ && do {$word = ($channel =~ /[13]/) ? "9234" : "1a34"; last SWITCH;};
+    /^√ã$/ && do {$word = ($channel =~ /[13]/) ? "92b5" : "1ab5"; last SWITCH;};
+    /^√´$/ && do {$word = ($channel =~ /[13]/) ? "92b6" : "1ab6"; last SWITCH;};
+    /^√é$/ && do {$word = ($channel =~ /[13]/) ? "9237" : "1a37"; last SWITCH;};
+    /^√è$/ && do {$word = ($channel =~ /[13]/) ? "9238" : "1a38"; last SWITCH;};
+    /^√Ø$/ && do {$word = ($channel =~ /[13]/) ? "92b9" : "1ab9"; last SWITCH;};
+    /^√î$/ && do {$word = ($channel =~ /[13]/) ? "92ba" : "1aba"; last SWITCH;};
+    /^√ô$/ && do {$word = ($channel =~ /[13]/) ? "923b" : "1a3b"; last SWITCH;};
+    /^√π$/ && do {$word = ($channel =~ /[13]/) ? "92bc" : "1abc"; last SWITCH;};
+    /^√õ$/ && do {$word = ($channel =~ /[13]/) ? "923d" : "1a3d"; last SWITCH;};
     /^\<\<$/ && do {$word = ($channel =~ /[13]/) ? "923e" : "1a3e"; last SWITCH;};
     /^\>\>$/ && do {$word = ($channel =~ /[13]/) ? "92bf" : "1abf"; last SWITCH;};
-    /^√$/ && do {$word = ($channel =~ /[13]/) ? "1320" : "9b20"; last SWITCH;};
-    /^„$/ && do {$word = ($channel =~ /[13]/) ? "13a1" : "9ba1"; last SWITCH;};
-    /^Õ$/ && do {$word = ($channel =~ /[13]/) ? "13a2" : "9ba2"; last SWITCH;};
-    /^Ã$/ && do {$word = ($channel =~ /[13]/) ? "1323" : "9b23"; last SWITCH;};
-    /^Ï$/ && do {$word = ($channel =~ /[13]/) ? "13a4" : "9ba4"; last SWITCH;};
-    /^“$/ && do {$word = ($channel =~ /[13]/) ? "1325" : "9b25"; last SWITCH;};
-    /^Ú$/ && do {$word = ($channel =~ /[13]/) ? "1326" : "9b26"; last SWITCH;};
-    /^’$/ && do {$word = ($channel =~ /[13]/) ? "13a7" : "9ba7"; last SWITCH;};
-    /^ı$/ && do {$word = ($channel =~ /[13]/) ? "13a8" : "9ba8"; last SWITCH;};
+    /^√É$/ && do {$word = ($channel =~ /[13]/) ? "1320" : "9b20"; last SWITCH;};
+    /^√£$/ && do {$word = ($channel =~ /[13]/) ? "13a1" : "9ba1"; last SWITCH;};
+    /^√ç$/ && do {$word = ($channel =~ /[13]/) ? "13a2" : "9ba2"; last SWITCH;};
+    /^√å$/ && do {$word = ($channel =~ /[13]/) ? "1323" : "9b23"; last SWITCH;};
+    /^√¨$/ && do {$word = ($channel =~ /[13]/) ? "13a4" : "9ba4"; last SWITCH;};
+    /^√í$/ && do {$word = ($channel =~ /[13]/) ? "1325" : "9b25"; last SWITCH;};
+    /^√≤$/ && do {$word = ($channel =~ /[13]/) ? "1326" : "9b26"; last SWITCH;};
+    /^√ï$/ && do {$word = ($channel =~ /[13]/) ? "13a7" : "9ba7"; last SWITCH;};
+    /^√µ$/ && do {$word = ($channel =~ /[13]/) ? "13a8" : "9ba8"; last SWITCH;};
     /^rb$/ && do {$word = ($channel =~ /[13]/) ? "1329" : "9b29"; last SWITCH;};
     /^lb$/ && do {$word = ($channel =~ /[13]/) ? "132a" : "9b2a"; last SWITCH;};
     /^\\$/ && do {$word = ($channel =~ /[13]/) ? "13ab" : "9bab"; last SWITCH;};
@@ -5113,18 +5226,18 @@ sub asCommand {
     /^\_$/ && do {$word = ($channel =~ /[13]/) ? "13ad" : "9bad"; last SWITCH;};
     /^\|$/ && do {$word = ($channel =~ /[13]/) ? "13ae" : "9bae"; last SWITCH;};
     /^\~$/ && do {$word = ($channel =~ /[13]/) ? "132f" : "9b2f"; last SWITCH;};
-    /^ƒ$/ && do {$word = ($channel =~ /[13]/) ? "13b0" : "9bb0"; last SWITCH;};
-    /^‰$/ && do {$word = ($channel =~ /[13]/) ? "1331" : "9b31"; last SWITCH;};
-    /^÷$/ && do {$word = ($channel =~ /[13]/) ? "1332" : "9b32"; last SWITCH;};
-    /^ˆ$/ && do {$word = ($channel =~ /[13]/) ? "13b3" : "9bb3"; last SWITCH;};
-    /^ﬂ$/ && do {$word = ($channel =~ /[13]/) ? "1334" : "9b34"; last SWITCH;};
+    /^√Ñ$/ && do {$word = ($channel =~ /[13]/) ? "13b0" : "9bb0"; last SWITCH;};
+    /^√§$/ && do {$word = ($channel =~ /[13]/) ? "1331" : "9b31"; last SWITCH;};
+    /^√ñ$/ && do {$word = ($channel =~ /[13]/) ? "1332" : "9b32"; last SWITCH;};
+    /^√∂$/ && do {$word = ($channel =~ /[13]/) ? "13b3" : "9bb3"; last SWITCH;};
+    /^√ü$/ && do {$word = ($channel =~ /[13]/) ? "1334" : "9b34"; last SWITCH;};
     /^yen$/ && do {$word = ($channel =~ /[13]/) ? "13b5" : "9bb5"; last SWITCH;};
     /^x$/ && do {$word = ($channel =~ /[13]/) ? "13b6" : "9bb6"; last SWITCH;};
     /^bar$/ && do {$word = ($channel =~ /[13]/) ? "1337" : "9b37"; last SWITCH;};
-    /^≈$/ && do {$word = ($channel =~ /[13]/) ? "1338" : "9b38"; last SWITCH;};
-    /^Â$/ && do {$word = ($channel =~ /[13]/) ? "13b9" : "9bb9"; last SWITCH;};
-    /^ÿ$/ && do {$word = ($channel =~ /[13]/) ? "13ba" : "9bba"; last SWITCH;};
-    /^¯$/ && do {$word = ($channel =~ /[13]/) ? "133b" : "9b3b"; last SWITCH;};
+    /^√Ö$/ && do {$word = ($channel =~ /[13]/) ? "1338" : "9b38"; last SWITCH;};
+    /^√•$/ && do {$word = ($channel =~ /[13]/) ? "13b9" : "9bb9"; last SWITCH;};
+    /^√ò$/ && do {$word = ($channel =~ /[13]/) ? "13ba" : "9bba"; last SWITCH;};
+    /^√∏$/ && do {$word = ($channel =~ /[13]/) ? "133b" : "9b3b"; last SWITCH;};
     /^ul$/ && do {$word = ($channel =~ /[13]/) ? "13bc" : "9bbc"; last SWITCH;};
     /^ur$/ && do {$word = ($channel =~ /[13]/) ? "133d" : "9b3d"; last SWITCH;};
     /^ll$/ && do {$word = ($channel =~ /[13]/) ? "133e" : "9b3e"; last SWITCH;};
@@ -5773,7 +5886,7 @@ sub asXDS {
   SWITCH: for ($class) {
     /Cs/ && do {$xdslist[0] = 0x01; last SWITCH;}; # Current start
     /Cc/ && do {$xdslist[0] = 0x02; last SWITCH;}; # Current continue
-    /Fs/ && do {$xdslist[0] = 0x03; last SWITCH;}; # Future start         
+    /Fs/ && do {$xdslist[0] = 0x03; last SWITCH;}; # Future start
     /Fc/ && do {$xdslist[0] = 0x04; last SWITCH;}; # Future continue
     /Hs/ && do {$xdslist[0] = 0x05; last SWITCH;}; # Channel start
     /Hc/ && do {$xdslist[0] = 0x06; last SWITCH;}; # Channel continue
@@ -5797,7 +5910,7 @@ sub asXDS {
   }
   my %MonthCode = ( 'Jan' => 1, 'Feb' => 2, 'Mar' => 3, 'Apr' => 4, 'May' => 5, 'Jun' => 6,
                     'Jul' => 7, 'Aug' => 8, 'Sep' => 9, 'Oct' => 10, 'Nov' => 11, 'Dec' => 12 );
-  my %LanguageCode = ( 'Unknown' => 0, 'English' => 1, 'EspaÒol' => 2, 'FranÁais' => 3, 
+   my %LanguageCode = ( 'Unknown' => 0, 'English' => 1, 'Espa√±ol' => 2, 'Fran√ßais' => 3, 
                        'Deutsch' => 4, 'Italiano' => 5, 'Other' => 6, 'None' => 7,
                        'Espanol' => 2, 'Francais' => 3 );
   SWITCH: for (substr $class, 0, 1) {
@@ -5987,7 +6100,7 @@ sub asXDS {
               $xdslist[$counter++] = $RatingCode{$elements[1]} + 64;
               last SWITCH3;
             };
-            /CF/ && do {                #  Canada FranÁais
+            /CF/ && do {                #  Canada Fran√ßais
               # byte 2
               $xdslist[$counter++] = 64 + 52; # 52 for CF system
               %RatingCode = ('E' => 0, 'G' => 1, '8+' => 2,
@@ -6110,13 +6223,13 @@ sub asXDS {
             # number of scanlines between top of visible screen
             #  and top of active video area
             # byte 2
-            $xdslist[$counter++] = $element + 64; 
+            $xdslist[$counter++] = $element + 64;
             $position += length($element) + 1;
             $element = $elements[$elementCounter++];
             # number of scanlines between bottom of active video area
             #  and bottom of visible screen
             # byte 3
-            $xdslist[$counter++] = $element + 64; 
+            $xdslist[$counter++] = $element + 64;
             $position += length($element) + 1;
           }
           # optional ratio argument (either "_" for 4:3 or "A" for 16:9)
@@ -6274,13 +6387,13 @@ sub asXDS {
                            'Surround' => 4, 'Data' => 5, 'Other' => 6, 'None' => 7);
             # primary audio stream
             # byte 6
-            $xdslist[$counter] = $StreamCode{$elements[$elementCounter++]} + 64; 
+            $xdslist[$counter] = $StreamCode{$elements[$elementCounter++]} + 64;
             $xdslist[$counter++] += $LanguageCode{$elements[$elementCounter++]} * 8;
             %StreamCode = ('Unknown' => 0, 'Mono' => 1, 'DAS' => 2, 'Non-Program' => 3,
                            'FX' => 4, 'Data' => 5, 'Other' => 6, 'None' => 7);
             # secondary audio stream
             # byte 7
-            $xdslist[$counter] = $StreamCode{$elements[$elementCounter++]} + 64; 
+            $xdslist[$counter] = $StreamCode{$elements[$elementCounter++]} + 64;
             $xdslist[$counter++] += $LanguageCode{$elements[$elementCounter++]} * 8;
             $position = 13;
           }
@@ -6289,10 +6402,10 @@ sub asXDS {
             %StreamCode = ('CC1' => 0, 'T1' => 1, 'CC2' => 2, 'T2' => 3,
                            'CC3' => 4, 'T3' => 5, 'CC4' => 6, 'T4' => 7);
             # byte 8
-            $xdslist[$counter] = $StreamCode{$elements[$elementCounter++]} + 64; 
+            $xdslist[$counter] = $StreamCode{$elements[$elementCounter++]} + 64;
             $xdslist[$counter++] += $LanguageCode{$elements[$elementCounter++]} * 8;
             # byte 9
-            $xdslist[$counter] = $StreamCode{$elements[$elementCounter++]} + 64; 
+            $xdslist[$counter] = $StreamCode{$elements[$elementCounter++]} + 64;
             $xdslist[$counter++] += $LanguageCode{$elements[$elementCounter++]} * 8;
             $position = 14;
           }
@@ -6400,7 +6513,7 @@ sub asXDS {
               $xdslist[$counter++] = hex asChar(substr $line, $position++, 1);
               $position += 1;
             }
-            
+
           }
           last SWITCH2;
         };
@@ -6470,7 +6583,7 @@ sub asXDS {
             my $hr = substr $line, 10, 2;
             my $mi = substr $line, 13, 2;
             # daylight savings time ("D") or standard time ("S")
-            my $d = substr $line, 15, 1; 
+            my $d = substr $line, 15, 1;
             # byte 2
             $xdslist[$counter++] = $mi + 64;
             # byte 3
@@ -6514,7 +6627,7 @@ sub asXDS {
             $xdslist[$counter++] = $WeekdayCode{substr $line, 33, 3} + 64;
             # byte 7
             # year stored is offset from 1990
-            $xdslist[$counter++] = $yr - 1990 + 64;  
+            $xdslist[$counter++] = $yr - 1990 + 64;
             $position = 37;
           }
           last SWITCH2;
@@ -6531,7 +6644,7 @@ sub asXDS {
             $hr = substr $line, 10, 2;
             $mi = substr $line, 13, 2;
             # daylight savings time ("D") or standard time ("S")
-            my $d = substr $line, 15, 1; 
+            my $d = substr $line, 15, 1;
             # byte 2
             $xdslist[$counter++] = $mi + 64;
             # byte 3
@@ -6574,7 +6687,7 @@ sub asXDS {
             # byte 6
             $xdslist[$counter++] = $mi + 64;
             # byte 7
-            $xdslist[$counter++] = $hr + 64; 
+            $xdslist[$counter++] = $hr + 64;
             $position = 34;
           }
           last SWITCH2;
@@ -6587,9 +6700,9 @@ sub asXDS {
           foreach $location (@elements) {
             if (substr($location, 0, 1) ne "\\") {
               # scanline, from 10 to 20
-              $xdslist[$counter] = (substr $location, 0, 2) + 64; 
+              $xdslist[$counter] = (substr $location, 0, 2) + 64;
               # field can be 1 or 2
-              if (substr($location, 3, 1) == 2) { 
+              if (substr($location, 3, 1) == 2) {
                 $xdslist[$counter] += 32;
               }
               $counter++;
@@ -6602,7 +6715,7 @@ sub asXDS {
           $xdslist[1] = 0x04;
           if ($position == 10) {
             # hours broadcast is off from UTC in London
-            my $tz = substr $line, 10, 3; 
+            my $tz = substr $line, 10, 3;
             # byte 2
             $xdslist[$counter] = $tz + 24 + 64;
             my $d = substr $line, 13, 1; # daylight savings time ("D") or standard time ("S")
@@ -6620,8 +6733,8 @@ sub asXDS {
           $xdslist[1] = 0x40;
           if ($position == 10) {
             # channel is stored as high and low bytes
-            my $channel = substr $line, 10, 4; 
-            my $hi = sprintf("%d", $channel / 64); 
+            my $channel = substr $line, 10, 4;
+            my $hi = sprintf("%d", $channel / 64);
             my $lo = $channel % 64;
             # byte 2
             $xdslist[$counter++] = $lo + 64;
@@ -6635,8 +6748,8 @@ sub asXDS {
           $xdslist[1] = 0x41;
           if ($position == 10) {
             # channel is stored as high and low bytes
-            my $channel = substr $line, 10, 4; 
-            my $hi = sprintf("%d", $channel / 64); 
+            my $channel = substr $line, 10, 4;
+            my $hi = sprintf("%d", $channel / 64);
             my $lo = $channel % 64;
             # byte 2
             $xdslist[$counter++] = $lo + 64;
@@ -6651,8 +6764,8 @@ sub asXDS {
           my $hi, $lo;
           if ($position == 10) {
             # channel is stored as high and low bytes
-            my $channel = substr $line, 10, 4; 
-            $hi = sprintf("%d", $channel / 64); 
+            my $channel = substr $line, 10, 4;
+            $hi = sprintf("%d", $channel / 64);
             $lo = $channel % 64;
             # byte 2
             $xdslist[$counter++] = $lo + 64;
@@ -6698,7 +6811,7 @@ sub asXDS {
               $remappedFactor = 32;
             } else {
               if ($elementCounter >= scalar(@elements)) {
-                $userChannel = $channel; 
+                $userChannel = $channel;
               } else {
                 $tuneChannel = $channel;
               }
@@ -6758,7 +6871,7 @@ sub asXDS {
               }
               $position++;
             } else {
-              if (substr($element, 0, 1) ne "\\") { 
+              if (substr($element, 0, 1) ne "\\") {
                 # duration
                 my $hr = substr($element, 0, 2);
                 my $mi = substr($element, 3, 2);
@@ -6820,7 +6933,7 @@ sub asXDS {
     $sum += 15;
     # calculate checksum, the value necessary
     #  to make the sum evenly-divisible by 128
-    $xdslist[$counter++] = 128 - ($sum % 128); 
+    $xdslist[$counter++] = 128 - ($sum % 128);
     $XDSPosition{$type} = 0;
     $XDSSum{$type} = 0;
   } else {
@@ -6852,7 +6965,7 @@ sub asChar {
     /\'/ && do {$byte = "27"; last SWITCH;};
     /\(/ && do {$byte = "28"; last SWITCH;};
     /\)/ && do {$byte = "29"; last SWITCH;};
-    /[·\*]/ && do {$byte = "2a"; last SWITCH;};
+    /[√°\*]/ && do {$byte = "2a"; last SWITCH;};
     /\+/ && do {$byte = "2b"; last SWITCH;};
     /\,/ && do {$byte = "2c"; last SWITCH;};
     /\-/ && do {$byte = "2d"; last SWITCH;};
@@ -6902,11 +7015,11 @@ sub asChar {
     /Y/ && do {$byte = "59"; last SWITCH;};
     /Z/ && do {$byte = "5a"; last SWITCH;};
     /\[/ && do {$byte = "5b"; last SWITCH;};
-    /[È\\]/ && do {$byte = "5c"; last SWITCH;};
+    /[√©\\]/ && do {$byte = "5c"; last SWITCH;};
     /\]/ && do {$byte = "5d"; last SWITCH;};
-    /[Ì\^]/ && do {$byte = "5e"; last SWITCH;};
-    /[Û_]/ && do {$byte = "5f"; last SWITCH;};
-    /[˙`]/ && do {$byte = "60"; last SWITCH;};
+    /[√≠\^]/ && do {$byte = "5e"; last SWITCH;};
+    /[√≥_]/ && do {$byte = "5f"; last SWITCH;};
+    /[√∫`]/ && do {$byte = "60"; last SWITCH;};
     /a/ && do {$byte = "61"; last SWITCH;};
     /b/ && do {$byte = "62"; last SWITCH;};
     /c/ && do {$byte = "63"; last SWITCH;};
@@ -6933,19 +7046,18 @@ sub asChar {
     /x/ && do {$byte = "78"; last SWITCH;};
     /y/ && do {$byte = "79"; last SWITCH;};
     /z/ && do {$byte = "7a"; last SWITCH;};
-    /[Á\{]/ && do {$byte = "7b"; last SWITCH;};
-    /[˜\|]/ && do {$byte = "7c"; last SWITCH;};
-    /[—\}]/ && do {$byte = "7d"; last SWITCH;};
-    /[Ò~]/ && do {$byte = "7e"; last SWITCH;};
+    /[√ß\{]/ && do {$byte = "7b"; last SWITCH;};
+    /[√∑\|]/ && do {$byte = "7c"; last SWITCH;};
+    /[√ë\}]/ && do {$byte = "7d"; last SWITCH;};
+    /[√±~]/ && do {$byte = "7e"; last SWITCH;};
     /\|/ && do {$byte = "7f"; last SWITCH;};
-    /£/ && do {die "Unknown character £ in line $. of $input, stopped";};
+    /¬£/ && do {die "Unknown character ¬£ in line $. of $input, stopped";};
   }
   if ($byte eq "~") {
     die "Invalid character {".$char."} in line $. of $input, stopped";
   }
-  if ($mode != "ITV") { # ITV doesn't use odd parity
+  if ($mode ne "ITV") { # ITV doesn't use odd parity
     $byte = sprintf("%02x", oddParity(hex $byte));
   }
   return $byte;
 }
-
