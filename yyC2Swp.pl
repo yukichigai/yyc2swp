@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "0.6";
+my $Version = "0.7";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -83,6 +83,12 @@ my $Version = "0.6";
 # 3.4 Fixed character set comparison (was always using ITV set)
 # 3.5 Fixed numerous XDS bugs, including using the wrong filler byte
 #       (0x80 instead of 0x40)
+# 3.5.1 Added check for correct word length in CCD input
+# 3.6 Fixed odd parity for CCD->SCC
+# 3.6.1 Bug fix for SAMI header and screen clear lines
+# 3.7 Added Quicktime Caption format to subtitle export
+# 3.7.1 Fixed {ldq} and {rdq} definitions.
+# 3.8 Added Timed Text output (from Thomas J. Webb)
 # -----------------------------------------------------------------------------------
 # 0.4 Y|y - Fork code to create new conversion utility that only converts to formats
 #       which preserve positioning information. Add support for unicode and 
@@ -91,7 +97,18 @@ my $Version = "0.6";
 #       Further changes to SAMI and VTT output. TTML, SAMI, and VTT output is still flawed.
 # 0.6 Adjust vertical positioning math (y coordinates were not zero-indexed). Further
 #       refinements to TTML generation. Output is mostly correct on VLC.
-
+# 0.7 Add code changes from the lost 3.8 version of CCASDI. Thanks to bbgdzxng1 for
+#	excavating this and sharing it with me. Rework subtitle conversion to use SSA/ASS 
+#	as the default syntax, since that is our primary output format. Include 3.8 code
+#	for Quicktime Caption format and add positioning to output. Add initial GPAC Timed
+#	Text (TTXT) support; formatting support is not yet present, as that will require a
+#	reorganization of how subtitles are generated. Add warning message to subtitle 
+#	generation noting if subtitles contain features that are unsupported by the output
+#	format (e.g. color, alpha). Rework how VTT and TTML generation is done in order to
+#	prevent formatting errors from nested format/color changes. Adjust TTML format
+#	to match SMPTE-TT spec using documentation from PBS. This includes breaking up
+#	subtitles into individual entries for each line, which partially alleviates but
+#	does not fully fix the display inconsistencies with the format on VLC.
 sub usage;
 sub frame;
 sub timecodeof;
@@ -278,10 +295,12 @@ if ($output eq "~") {
      }
      else {
        if ($suffix =~ m/vtt/i) { $convertFormat = "WebVTT"; }
-       elsif ($suffix =~ m/smi|sami/i) { $convertFormat = "SAMI";}
+       elsif ($suffix =~ m/smi|sami/i) { $convertFormat = "SAMI"; }
        elsif ($suffix =~ m/ssa/i) { $convertFormat = "SubStation Alpha"; }
        elsif ($suffix =~ m/ass/i) { $convertFormat = "Advanced SubStation"; }
-       elsif ($suffix =~ m/ttml|dfxp/i) { $convertFormat = "Timed Text Markup Language"; $writeTemp = 1;}
+       elsif ($suffix =~ m/ttml|dfxp/i) { $convertFormat = "Timed Text Markup Language"; } # $writeTemp = 1;
+       elsif ($suffix =~ m/ttxt/i) { $convertFormat = "GPAC Timed Text"; }
+       elsif ($output =~ m/(.*)(\.qt\.txt)$/i) { $convertFormat = "Quicktime Caption"; $suffix = ".qt.txt"; }
        $convert = 1;
      }
    }
@@ -606,6 +625,17 @@ LINELOOP: while (<RH>) {
     }
     WORDLOOP: foreach $word (@words) {
       $numwords = $numwords + 1;
+      if (length($word) != 4) {
+        $outline =~ m/^( )(.+)/;
+        $outline = $2;
+        if ($convert == 0) {
+          print WH $timecode."\t".$outline."\n";
+          if ($assemble) {
+            print WH "\n";
+          }
+        }
+        die "Incorrect word length for word $numwords, timecode $timecode, stopped";
+      }
       $word =~ m/(..)(..)/;
       $hi = hex $1;
       $lo = hex $2;
@@ -713,7 +743,7 @@ LINELOOP: while (<RH>) {
     elsif(length($_) >= 98){
       # check for invalid characters in the color and style definitions
       if(!(substr($_,33,32) =~ m/^[0-9]+$/ and substr($_,65,32) =~ m/^[BIRU]+$/)){
-        die "Invalid characters found in g608 file in subtitle $subtitleNumber : $_";
+        die "Invalid characters found in g608 file in subtitle ($subtitleNumber+1) : $_";
       }
       # don't process rows we can immediately consider blank: all 9s in the color definition, all whitespace in the character list
       if(!(substr($_,33,32) =~ m/^9+$/ or substr($_,0,32) =~m/^\s+$/)){
@@ -791,7 +821,8 @@ sub usage {
   print "         NTSC timebase: d (dropframe) or n (non-dropframe) (DEFAULT: n)\n";
   print "  NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is\n";
   print "    controlled by outfile suffix: .vtt WebVTT, .smi/.sami SAMI, .ssa SubStation Alpha,\n";
-  print "    .ttml/.dfxp Timed Text Markup Language, .ass Advanced SubStation (default), or\n";
+  print "    .ttml/.dfxp SMPTE-TT/Timed Text Markup Language, .qt.txt Quicktime Caption,\n";
+  print "    .ttxt GPAC Timed Text, .ass Advanced SubStation (default),\n";
   print "    .ccd SCC Disassembly (SCC input only).\n\n";
 }
 
@@ -887,21 +918,21 @@ sub timecodeof {
 
 # subroutine to get odd-parity version of a number (individual bits add up to an odd number)
 sub oddParity {
-  my @odd = (0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
-             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 
+  my @odd = (0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+             1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
              0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0);
   my $num = shift(@_);
   if (not $odd[$num]) {
@@ -968,6 +999,8 @@ sub convertToSub {
   $starty = 16;
   $endx = 0;
   $endy = 1;
+  
+  my $preformat = 0;
 
   # Y|y - Find the bounds of the printable characters in the caption
   for (my $x = 0; $x < 40; $x++){
@@ -994,66 +1027,268 @@ sub convertToSub {
     #  rather than the end of the loop because we might need to close out style
     #  tags on the final line of the subtitle
     if ($_row > $starty){
+      # TTML has to be output per-line, so we need to close the span tags if there are any open (and reset values)
+      if(($convertFormat eq "Timed Text Markup Language") and (($color ne "0") or ($bgcolor ne "B") or ($italicized) or ($underlined))){
+        $subtitle = $subtitle."</span>";
+        $color = "0";
+        $bgcolor = "B";
+        $italicized = 0;
+        $underlined = 0;
+      }
       $subtitle = $subtitle."\n";
     }
     for (my $_col = $startx; $_col < $endx; $_col++) {
       if ($character[$_row][$_col] eq "\x00") {
         $subtitle = $subtitle."\xa0"; # add a no-break space
+      # Y|y - new stuff. Some formats need special handling during construction, not after (TTML, TTXT, VTT)
+      } elsif ($convertFormat eq "Timed Text Markup Language") { # TTML uses span tags for EVERYTHING, so nesting them risks inaccurate conversion. Whenever there is a format change we need to close the span and open a new one
+        # Any formatting change means we need to redo span tags
+        $preformat = 1;
+        if(($color[$_row][$_col] ne $color) or ($underlined[$_row][$_col] ne $underlined) or ($italicized[$_row][$_col] ne $italicized) or ($bgcolor[$_row][$_col] ne $bgcolor)){
+          # If there were any existing formats then we need to close the span
+          if(($color ne "0") or ($bgcolor ne "B") or ($underlined) or ($italicized)){
+            $subtitle = $subtitle."</span>";
+          }
+          # If there's anything different from default, start a new span
+          if(($color[$_row][$_col] ne "0") or ($bgcolor[$_row][$_col] ne "B") or $italicized[$_row][$_col] or $underlined[$_row][$_col]){
+            # Start the span
+            $subtitle = $subtitle."<span";
+            # Now see what changed. Start with color
+            if($color[$_row][$_col] ne "0"){
+              if ($color[$_row][$_col] eq "0") { # White
+                $subtitle = $subtitle." tts:color=\"white\"";
+              }
+              if ($color[$_row][$_col] eq "1") { # Green (Lime in modern standards)
+                $subtitle = $subtitle." tts:color=\"lime\"";
+              }
+              if ($color[$_row][$_col] eq "2") { # Blue
+                $subtitle = $subtitle." tts:color=\"blue\"";
+              }
+              if ($color[$_row][$_col] eq "3") { # Cyan (AKA Aqua)
+                $subtitle = $subtitle." tts:color=\"cyan\"";
+              }
+              if ($color[$_row][$_col] eq "4") { # Red
+                $subtitle = $subtitle." tts:color=\"red\"";
+              }
+              if ($color[$_row][$_col] eq "5") { # Yellow
+                $subtitle = $subtitle." tts:color=\"yellow\"";
+              }
+              if ($color[$_row][$_col] eq "6") { # Magenta (AKA Fuchsia)
+                $subtitle = $subtitle." tts:color=\"magenta\"";
+              }
+              if ($color[$_row][$_col] eq "8") { # Black
+                $subtitle = $subtitle." tts:color=\"black\"";
+              }
+            }
+            # Now background color (and alpha)
+            if ($bgcolor[$_row][$_col] ne "B") {
+              # Check if the background color changed or just the transparency (upper vs lower)
+              # Start with the color portion
+              if(uc($bgcolor) ne uc($bgcolor[$_row][$_col])){
+  	        if (uc($bgcolor[$_row][$_col]) eq "W") { # White
+	          $subtitle = $subtitle." tts:backgroundColor=\"#FFFFFF"; 
+    	        }
+  	        if (uc($bgcolor[$_row][$_col]) eq "G") { # Green
+                  $subtitle = $subtitle." tts:backgroundColor=\"#00FF00";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
+                  $subtitle = $subtitle." tts:backgroundColor=\"#0000FF";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
+                  $subtitle = $subtitle." tts:backgroundColor=\"#00FFFF";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "R") { # Red
+                  $subtitle = $subtitle." tts:backgroundColor=\"#FF0000";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
+                  $subtitle = $subtitle." tts:backgroundColor=\"#FFFF00";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
+                  $subtitle = $subtitle." tts:backgroundColor=\"#FF00FF";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "B") { # Black
+                  $subtitle = $subtitle." tts:backgroundColor=\"#000000";
+                }
+              }
+              # Handle transparency
+              if (uc($bgcolor[$_row][$_col]) eq "T") { # Transparent
+                $subtitle = $subtitle." tts:backgroundColor=\"transparent\"";
+              }
+              elsif(uc($bgcolor) eq $bgcolor and uc($bgcolor[$_row][$_col]) ne $bgcolor[$_row][$_col]){ # Semi-transparent (lowercase)
+  	        $subtitle = $subtitle."80\"";
+	      }
+	      elsif(uc($bgcolor) ne $bgcolor and uc($bgcolor[$_row][$_col]) eq $bgcolor[$_row][$_col]){ # Opaque (uppercase)
+	        $subtitle = $subtitle."FF\"";
+	      }
+            }
+            if($italicized[$_row][$_col]){
+              $subtitle = $subtitle." tts:fontStyle=\"italic\"";
+            }
+            if($underlined[$_row][$_col]){
+              $subtitle = $subtitle." tts:textDecoration=\"underline\"";
+            }
+            $subtitle = $subtitle.">";
+          }
+        }
+        # Finally, copy over the formatting tags and the new character
+        $color = $color[$_row][$_col];
+        $bgcolor = $bgcolor[$_row][$_col];            
+        $italicized = $italicized[$_row][$_col];
+        $underlined = $underlined[$_row][$_col];
+        $subtitle = $subtitle.$character[$_row][$_col];
+      } elsif ($convertFormat eq "WebVTT") { # WebVTT uses cue tags for color changes. Fortunately italic and underline just use normal html tags
+        $preformat = 1;
+        # Any color change means we need to close out the old cue tag and/or write a new one
+        if(($color[$_row][$_col] ne $color) or ($bgcolor[$_row][$_col] ne $bgcolor)){
+          # Close out any existing colors
+          if(($color ne "0") or ($bgcolor ne "B")){
+            $subtitle = $subtitle."</c>";
+          }
+          # Color differences from default require a new cue tag
+          if(($color[$_row][$_col] ne "0") or ($bgcolor[$_row][$_col] ne "B")){
+            # Start the cue tag
+            $subtitle = $subtitle."<c";
+            # Now see what changed. Start with color
+            if($color[$_row][$_col] ne "0"){
+              if ($color[$_row][$_col] eq "0") { # White
+                $subtitle = $subtitle.".white";
+              }
+              if ($color[$_row][$_col] eq "1") { # Green (Lime in modern standards)
+                $subtitle = $subtitle.".lime";
+              }
+              if ($color[$_row][$_col] eq "2") { # Blue
+                $subtitle = $subtitle.".blue";
+              }
+              if ($color[$_row][$_col] eq "3") { # Cyan 
+                $subtitle = $subtitle.".cyan";
+              }
+              if ($color[$_row][$_col] eq "4") { # Red
+                $subtitle = $subtitle.".red";
+              }
+              if ($color[$_row][$_col] eq "5") { # Yellow
+                $subtitle = $subtitle.".yellow";
+              }
+              if ($color[$_row][$_col] eq "6") { # Magenta
+                $subtitle = $subtitle.".magenta";
+              }
+              if ($color[$_row][$_col] eq "8") { # Black
+                $subtitle = $subtitle.".black";
+              }
+            }
+            # Now background color (and alpha)
+            if ($bgcolor[$_row][$_col] ne "B") {
+              # Check if the background color changed or just the transparency (upper vs lower)
+              # Start with the color portion
+              if(uc($bgcolor) ne uc($bgcolor[$_row][$_col])){
+  	        if (uc($bgcolor[$_row][$_col]) eq "W") { # White
+	          $subtitle = $subtitle.".bg_white"; 
+    	        }
+  	        if (uc($bgcolor[$_row][$_col]) eq "G") { # Green (Lime)
+                  $subtitle = $subtitle.".bg_lime";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
+                  $subtitle = $subtitle.".bg_blue";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
+                  $subtitle = $subtitle.".bg_cyan";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "R") { # Red
+                  $subtitle = $subtitle.".bg_red";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
+                  $subtitle = $subtitle.".bg_yellow";
+                }
+                if (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
+                  $subtitle = $subtitle.".bg_magenta";
+                }
+                # Commenting out since we want black to be converted as transparent.
+                #  Later I'll add a mode to enable caption backgrounds by default
+#                if (uc($bgcolor[$_row][$_col]) eq "B") { # Black
+#                  $subtitle = $subtitle.".bg_black";
+#                }
+              }
+              # Commenting this out for now. No premade classes for transparency. Need to add custom ones. TO DO
+#              if (uc($bgcolor[$_row][$_col]) eq "T") { # Transparent
+#                $subtitle = $subtitle." tts:backgroundColor=\"transparent\"";
+#              }
+#              elsif(uc($bgcolor) eq $bgcolor and uc($bgcolor[$_row][$_col]) ne $bgcolor[$_row][$_col]){ # Semi-transparent (lowercase)
+#  	        $subtitle = $subtitle."80\"";
+#	      }
+#	      elsif(uc($bgcolor) ne $bgcolor and uc($bgcolor[$_row][$_col]) eq $bgcolor[$_row][$_col]){ # Opaque (uppercase)
+#	        $subtitle = $subtitle."FF\"";
+#	      }
+            }
+            $subtitle = $subtitle.">";
+          }
+        }
+        # Italics and underline are handled as normal
+        if ($underlined[$_row][$_col] ne $underlined) {
+          $subtitle = $subtitle.(($underlined[$_row][$_col]) ? "<u>" : "</u>");
+          $underlined = $underlined[$_row][$_col];
+        }
+        if ($italicized[$_row][$_col] ne $italicized) {
+          $subtitle = $subtitle.(($italicized[$_row][$_col]) ? "<i>" : "</i>");
+          $italicized = $italicized[$_row][$_col];
+        }
+        # Finally, copy over the formatting tags and the new character
+        $color = $color[$_row][$_col];
+        $bgcolor = $bgcolor[$_row][$_col];            
+        $subtitle = $subtitle.$character[$_row][$_col];
       } else {
         if ($color[$_row][$_col] ne $color) {
-          if ($color[$_row][$_col] eq "0") {
-            $subtitle = $subtitle."</font>";
+          if ($color[$_row][$_col] eq "0") { # White
+            $subtitle = $subtitle."{\\c&HFFFFFF&}";
           }
-          if ($color[$_row][$_col] eq "1") {
-            $subtitle = $subtitle."<font color=\"\#00ff00\">";
+          if ($color[$_row][$_col] eq "1") { # Green
+            $subtitle = $subtitle."{\\c&H00FF00&}";
           }
-          if ($color[$_row][$_col] eq "2") {
-            $subtitle = $subtitle."<font color=\"\#0000ff\">";
+          if ($color[$_row][$_col] eq "2") { # Blue
+            $subtitle = $subtitle."{\\c&HFF0000&}";
           }
-          if ($color[$_row][$_col] eq "3") {
-            $subtitle = $subtitle."<font color=\"\#00ffff\">";
+          if ($color[$_row][$_col] eq "3") { # Cyan
+            $subtitle = $subtitle."{\\c&HFFFF00&}";
           }
-          if ($color[$_row][$_col] eq "4") {
-            $subtitle = $subtitle."<font color=\"\#ff0000\">";
+          if ($color[$_row][$_col] eq "4") { # Red
+            $subtitle = $subtitle."{\\c&H0000FF&}";
           }
-          if ($color[$_row][$_col] eq "5") {
-            $subtitle = $subtitle."<font color=\"\#ffff00\">";
+          if ($color[$_row][$_col] eq "5") { # Yellow
+            $subtitle = $subtitle."{\\c&H00FFFF&}";
           }
-          if ($color[$_row][$_col] eq "6") {
-            $subtitle = $subtitle."<font color=\"\#ff00ff\">";
+          if ($color[$_row][$_col] eq "6") { # Magenta
+            $subtitle = $subtitle."{\\c&HFF00FF&}";
           }
-          if ($color[$_row][$_col] eq "8") {
-            $subtitle = $subtitle."<font color=\"\#000000\">";
+          if ($color[$_row][$_col] eq "8") { # Black
+            $subtitle = $subtitle."{\\c&H000000&}";
           }
           $color = $color[$_row][$_col];
         }
         if ($bgcolor[$_row][$_col] ne $bgcolor) {
           # Check if the background color changed or just the transparency (upper vs lower)
           if(uc($bgcolor) ne uc($bgcolor[$_row][$_col])){
-	          if (uc($bgcolor[$_row][$_col]) eq "W") { # White
-	            $subtitle = $subtitle."{\\c3&HFFFFFF&}"; 
-	          }
-	          if (uc($bgcolor[$_row][$_col]) eq "G") { # Green
-	            $subtitle = $subtitle."{\\c3&H00FF00&}";
-	          }
-	          if (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
-	            $subtitle = $subtitle."{\\c3&HFF0000&}";
-	          }
-	          if (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
-	            $subtitle = $subtitle."{\\c3&HFFFF00&}";
-	          }
-	          if (uc($bgcolor[$_row][$_col]) eq "R") { # Red
-	            $subtitle = $subtitle."{\\c3&H0000FF&}";
-	          }
-	          if (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
-	            $subtitle = $subtitle."{\\c3&H00FFFF&}";
-	          }
-	          if (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
-	            $subtitle = $subtitle."{\\c3&HFF00FF&}";
-	          }
-	          if (uc($bgcolor[$_row][$_col]) eq "B") { # Black
-	            $subtitle = $subtitle."{\\c3&H000000&}";
-	          }
+	    if (uc($bgcolor[$_row][$_col]) eq "W") { # White
+	          $subtitle = $subtitle."{\\c3&HFFFFFF&}"; 
+	    }
+	    if (uc($bgcolor[$_row][$_col]) eq "G") { # Green
+              $subtitle = $subtitle."{\\c3&H00FF00&}";
+            }
+            if (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
+              $subtitle = $subtitle."{\\c3&HFF0000&}";
+            }
+            if (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
+              $subtitle = $subtitle."{\\c3&HFFFF00&}";
+            }
+            if (uc($bgcolor[$_row][$_col]) eq "R") { # Red
+              $subtitle = $subtitle."{\\c3&H0000FF&}";
+            }
+            if (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
+              $subtitle = $subtitle."{\\c3&H00FFFF&}";
+            }
+            if (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
+              $subtitle = $subtitle."{\\c3&HFF00FF&}";
+            }
+            if (uc($bgcolor[$_row][$_col]) eq "B") { # Black
+              $subtitle = $subtitle."{\\c3&H000000&}";
+            }
           }
           # Handle transparency
           if (uc($bgcolor[$_row][$_col]) eq "T") { # Transparent
@@ -1067,12 +1302,12 @@ sub convertToSub {
 	  }
           $bgcolor = $bgcolor[$_row][$_col];
         }
-        if ($underlined[$_row][$_col] != $underlined) {
-          $subtitle = $subtitle.(($underlined[$_row][$_col]) ? "<u>" : "</u>");
+        if ($underlined[$_row][$_col] ne $underlined) {
+          $subtitle = $subtitle.(($underlined[$_row][$_col]) ? "{\\u1}" : "{\\u0}");
           $underlined = $underlined[$_row][$_col];
         }
-        if ($italicized[$_row][$_col] != $italicized) {
-          $subtitle = $subtitle.(($italicized[$_row][$_col]) ? "<i>" : "</i>");
+        if ($italicized[$_row][$_col] ne $italicized) {
+          $subtitle = $subtitle.(($italicized[$_row][$_col]) ? "{\\i1}" : "{\\i0}");
           $italicized = $italicized[$_row][$_col];
         }
         $subtitle = $subtitle.$character[$_row][$_col];
@@ -1080,27 +1315,29 @@ sub convertToSub {
     }
   }
   # Although it doesn't technically matter, close out any remaining color/style tags
-  if ($color ne "0") {
-    $color = "0";
-    $subtitle = $subtitle."</font>";
-  }
-  if ($bgcolor ne "B") {
-    $bgcolor = "B";
-    $subtitle = $subtitle."{\\a3&H00&}";
-  }
-  if ($underlined) {
-    $underlined = 0;
-    $subtitle = $subtitle."</u>";
-  }
-  if ($italicized) {
-    $italicized = 0;
-    $subtitle = $subtitle."</i>";
+  if(!($preformat)){
+    if ($color ne "0") {
+      $color = "0";
+      $subtitle = $subtitle."{\\c&HFFFFFF&}";
+    }
+    if ($bgcolor ne "B") {
+      $bgcolor = "B";
+      $subtitle = $subtitle."{\\a3&H00&}";
+    }
+    if ($underlined) {
+      $underlined = 0;
+      $subtitle = $subtitle."{\\u0}";
+    }
+    if ($italicized) {
+      $italicized = 0;
+      $subtitle = $subtitle."{\\i0}";
+    }
   }
   # Now we need to readjust the y coordinates to be zero-indexed (i.e. subtract one from each)
   #  Otherwise vertical positioning math will be slightly off
   $starty--;
   $endy--;
-  return $subtitle."\n";
+  return $subtitle;
 }
 
 # subroutine to ouput subtitle file's header
@@ -1112,22 +1349,36 @@ sub outputHeader {
     $input =~ m/.*\.(.*)$/; # Get the extension of the input file
     print WH "NOTE Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n\n";
   }
+  # SMPTE-TT compliant (I think) thanks to https://docs.pbs.org/space/MM/5344210/Closed+Captioning
   elsif ($convertFormat eq "Timed Text Markup Language"){
     print WH "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-    print WH "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttp=\"http://www.w3.org/ns/ttml#parameter\"\n";
-    print WH "  xmlns:tts=\"http://www.w3.org/ns/ttml#styling\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\"\n";
-    print WH "  xmlns:xml=\"http://www.w3.org/XML/1998/namespace\" ttp:timeBase=\"media\" xml:lang=\"".$LangCode."\"\n";
+    print WH "<tt xmlns=\"http://www.w3.org/2006/10/ttaf1\" xmlns:tts=\"http://www.w3.org/2006/10/ttaf1#styling\" xmlns:ttm=\"http://www.w3.org/2006/10/ttaf1#metadata\" xmlns:smpte=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt\" xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"\n";
     # By default TTML divides the video into 32 horizontal cells and 15 vertical cells, just like captions. Unfortunately it doesn't
     #  account for overscan, so add some extra padding to mimic how captions are rendered on analog devices (and how they were designed)
-    print WH "  ttp:cellResolution=\"48 19\">\n"; #  ttp:displayAspectRatio=\"4 3\" tts:extent=\"".$ResX."px ".$ResY."px\" ttp:frameRate=\"".$fps."\"
+    print WH "  xml:lang=\"".$LangCode."\" ttp:cellResolution=\"96 36\">\n"; # Double both values since VLC doesn't support non-uniform font scaling
     print WH "  <head>\n        <metadata>\n            <ttm:title>".$Language." Closed Captions</ttm:title>\n";
     $input =~ m/.*\.(.*)$/;
     print WH "            <ttm:desc>Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)</ttm:desc>\n";
+    print WH "            <smpte:information xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\" origin=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\""; 
+    if ($channel < 0){$channel = 1;} # Default to 1 if we don't have a channel specified
+    print WH " mode=\"Preserved\" m608:channel=\"CC".$channel."\" m608:captionService=\"F1C".$channel."CC\"/>\n";
     print WH "        </metadata>\n        <styling>\n";
-    print WH "          <style xml:id=\"s1\" tts:textAlign=\"center\" tts:fontFamily=\"Courier New\" tts:fontSize=\"1c 1c\" tts:fontWeight=\"bold\"/>\n";
+    print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"Courier New\" tts:fontSize=\"2c\" tts:fontWeight=\"bold\"/>\n";
     print WH "        </styling>\n        <layout>\n";
-    # Write the header close to the temp file, since we'll need to add regions as we go
-    print TH "        </layout>\n    </head>\n\n    <body style=\"s1\">\n        <div>\n";
+    print WH "          <region xml:id=\"pop1\" tts:backgroundColor=\"transparent\"/>\n";
+    print WH "          <region xml:id=\"pop2\" tts:backgroundColor=\"transparent\"/>\n";
+    print WH "          <region xml:id=\"pop3\" tts:backgroundColor=\"transparent\"/>\n";
+    print WH "          <region xml:id=\"pop4\" tts:backgroundColor=\"transparent\"/>\n"; # We should only ever get 4 lines of captions
+    print WH "        </layout>\n    </head>\n\n    <body style=\"s1\" xml:space=\"preserve\">\n        <div>\n";
+  }
+  # I'd like to get proper 3GPP/MPEG-4 Timed Text (tx3g) output, but for now this format converts straight to that via GPAC
+  elsif ($convertFormat eq "GPAC Timed Text"){
+    $input =~ m/.*\.(.*)$/;
+    print WH "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork) -->\n<TextStream version=\"1.0\">\n";
+    print WH "<TextStreamHeader width=\"".$ResX."\" height=\"".$ResY."\">\n";
+    print WH "<TextSampleDescription horizontalJustification=\"left\" verticalJustification=\"top\" fillTextRegion=\"no\">\n";
+    print WH "<FontTable>\n<FontTableEntry fontName=\"Courier New\" fontID=\"0\"/>\n</FontTable>\n<TextBox top=\"0\" left=\"0\" bottom=\"".$ResX."\" right=\"".$ResY."\"/>\n";
+    print WH "<Style styles=\"Bold\" fontSize=\"30\" color=\"ff ff ff ff\"/>\n</TextSampleDescription>\n</TextStreamHeader>\n";
   }
   elsif ($convertFormat eq "SAMI") {
     print WH "<SAMI>\n";
@@ -1141,6 +1392,14 @@ sub outputHeader {
     print WH "</STYLE>\n";
     print WH "</HEAD>\n\n";
     print WH "<BODY>\n";
+  }
+  # https://web.archive.org/web/20031103011212/http://developer.apple.com/documentation/QuickTime/REF/refDataExchange.6.htm
+  # https://web.archive.org/web/20130502224223/http://webaim.org/techniques/captions/quicktime/caption_file
+  #  In case anyone is wondering where I pulled this arcane knowledge from
+  if ($convertFormat eq "Quicktime Caption") {
+    print WH "{QTtext}{font:Courier New}{justify:center}{size:30}{backColor:0,0,0}{keyedText:on}{dropShadow:on}\n"; # keyedText removes the background on the text box
+    print WH "{textColor:65535,65535,65535}{textEncoding:256}{timescale:1000}{width:0}{height:0}\n"; # textEncoding:256 enables unicode
+    print WH "[00:00:00.000] \n"; # Blank line at the start so the stream can be detected immediately
   }
   elsif ($convertFormat eq "SubStation Alpha") {
     print WH "[Script Info]\n";
@@ -1209,34 +1468,7 @@ sub outputSubtitle {
       ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
       $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
       $tc2 = sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms);
-      # subtitle manipulation
-      $subtitle =~ s|\n$||; # then remove last line break (we'll be adding it later)
-      $subtitle =~ s|{\\c3&H000000&}|</c>|g; # Convert black background (as transparent)
-      $subtitle =~ s|{\\c3&HFFFFFF&}|<c.bg_white>|gi; # Convert background white
-      $subtitle =~ s|{\\c3&H0000FF&}|<c.bg_red>|gi; # Convert background red
-      $subtitle =~ s|{\\c3&H0000FF&}|<c.bg_blue>|gi; # Convert background blue
-      $subtitle =~ s|{\\c3&H00FF00&}|<c.bg_lime>|gi; # Convert background green (lime)
-      $subtitle =~ s|{\\c3&H00FFFF&}|<c.bg_yellow>|gi; # Convert background yellow
-      $subtitle =~ s|{\\c3&HFFFF00&}|<c.bg_cyan>|gi; # Convert background cyan
-      $subtitle =~ s|{\\c3&HFF00FF&}|<c.bg_magenta>|gi; # Convert background magenta
-      $subtitle =~ s/{\\c3&H.{6}&}//g; # Strip any other background color
-      $subtitle =~ s/{\\a3&H.{2}&}//g; # Strip background alpha
-      $subtitle =~ s/<font color=\"\#ff0000\">/<c.red>/g; # replace red
-      $subtitle =~ s/<font color=\"\#00ff00\">/<c.lime>/g; # replace green (AKA lime in VTT's built-in styles)
-      $subtitle =~ s/<font color=\"\#0000ff\">/<c.blue>/g; # replace blue
-      $subtitle =~ s/<font color=\"\#ffff00\">/<c.yellow>/g; # replace yellow
-      $subtitle =~ s/<font color=\"\#ff00ff\">/<c.magenta>/g; # replace magenta
-      $subtitle =~ s/<font color=\"\#00ffff\">/<c.cyan>/g; # replace cyan
-      $subtitle =~ s/<font color=\"\#000000\">/<c.black>/g; # replace black
-      $subtitle =~ s|</font>|<c.white>|g; # replace white. We want to use an explict tag rather than ending the cue style in case there are nested colors.
-      # Count the number of cue opens and make sure there are a matching number of cue closes
-      my $copen = () = $subtitle =~ m|<c.|gi;
-      for(my $cclose = () = $subtitle =~ m|</c|gi; $cclose < $copen; $cclose++){
-        $subtitle = $subtitle."</c>";
-        if($cclose eq ($copen - 3)){ # Only show this warning if there were more than two color changes (i.e. not just white to blue to white again)
-          print "Warning: Multiple color changes detected in subtitle $subtitleNumber. Check subtitle to ensure presentation is acccurate (I did my best I swear).\n";
-        }
-      }
+      # No subtitle manipulation needed since convertToSub handles all that
       # Y|y - this would be nice if VLC would parse position with alignment, but it refuses to.
       #  This code winds up with stuff crammed against the far sides of the screen with no margin
       #
@@ -1260,48 +1492,70 @@ sub outputSubtitle {
       ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
       $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
       $tc2 = sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms);
+      # Unlike other formats, TTML natively supports automatic font sizing so that characters are the correct width and length, even if
+      #  the font is not the one specified. As such we don't need to do any trickery with centering the text.
+      # With the new changes to convertToSub we don't need to do any substitution. We *do* need to break the subtitle up by lines though
+      $subtitle = $subtitle."\n"; # Append a newline to ensure the below parsing gets the full subtitle
+      my $yoffset = 0;
+      my $regionnum = 1;
+      while($subtitle =~ /(.*\n)/g){
+      	my $subsub = $1; # It's fun to say
+      	my $xoffset = 0;
+      	if(!($subsub =~ m/^\s*$/)){ # skip completely blank lines
+          $subsub =~ s/\n|(\xa0+)$//g; # strip any newlines or trailing NBSPs
+          # Check for leading NBSPs. If found, trim and offset the start of the line accordingly
+	  if($subsub =~ m/^(\xa0+)/){
+	    $xoffset = length($1);
+	    $subsub =~ s/^(\xa0+)//;
+	  }
+      	  print WH "            <p region=\"pop".$regionnum++."\" tts:origin=\"".(($startx+$xoffset+8)*2)."c ".((($starty+$yoffset)*2) + 3)."c\" begin=\"".$tc1."\" end=\"".$tc2."\">".$subsub."</p>\n"; # xml:id=\"sub".sprintf("%05d", $subtitleNumber)."\"
+      	}
+      	$yoffset++;
+      }
+      # If we generated more than 4 lines of captions warn that this isn't SMPTE-TT compliant and the lines will probably not show up
+      if($regionnum > 5){
+      	print "Warning: subtitle $subtitleNumber has more than 4 lines of text, which is not SMPTE-TT (or EIA-608) compliant. Some lines will likely not be displayed.\n";
+      }
+    }
+    elsif ($convertFormat eq "GPAC Timed Text"){
+      # timecode manipulation
+      ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
+      $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+      $tc1 = sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms);
+      ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
+      $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+      $tc2 = sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms);
       # subtitle manipulation
-      $subtitle =~ s/{\\a3&H.{2}&}//g; # Strip background alpha
-      # Honestly, everything being a span makes things complicated and prone to errors. I'd like to implement something to
-      #  check the logic of nested spans and ensure they are handled accurately, but that'll take a fair bit of code. TO DO, in other words
-      $subtitle =~ s|{\\a3&H000000&}|</span>|g; # Translate black background color (as transparent)
-      $subtitle =~ s/{\\c3&H(.{2})(.{2})(.{2})&}/<span tts:backgroundColor="\#$3$2$1">/g; # Translate other background color tags
-      $subtitle =~ s|<i>|<span tts:fontStyle="italic">|g; # replace italics (why is this so many characters)
-      $subtitle =~ s|<u>|<span tts:textDecoration="underline">|g; # replace underline (again, so many characters)
-      $subtitle =~ s|<font color|<span tts:color|g; # change color tags
-      $subtitle =~ s|</font>|<span tts:color=\"#ffffff\">|g; # change white. We want to use a new span rather than closing the old one in case there are nested colors
-      $subtitle =~ s\</[iu]>\</span>\g; # close italic/underline
-      $subtitle =~ s|\n|<br/>|g; # convert newlines to <br/>
-      $subtitle =~ s|<br/>$||; # then remove last one
-      # Check count of span open tags and ensure there are an equal number of close span tags
-      my $spanopen = () = $subtitle =~ m|<span|gi;
-      for(my $spanclose = () = $subtitle =~ m|</span|gi; $spanclose < $spanopen; $spanclose++){
-        $subtitle = $subtitle."</span>";
-        if($spanclose eq ($spanopen - 1)){
-          print "Warning: Color or multiple format changes detected in subtitle $subtitleNumber. Check subtitle to ensure presentation is acccurate (I did my best I swear).\n";
-        }
+      if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c3&H.{6}&}/gi){
+        print "Warning: subtitle $subtitleNumber contains background color and/or alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
       }
-      # Check for an existing region definition for this positioning and make one if it doesn't already exist
-      my $regname = "x".(($startx+$endx)/2)."y".$starty."r";
-      if (!($regionList =~ m/$regname/i)){
-        $regionList = $regionList.",".$regname;
-        # And now some positioning trickery. First, calculate the expected left and right margins
-        my $Lmargin = $startx + 8; #
-        my $Rmargin = 32 - $endx + 8; #
-        # ...now because we can't be certain fonts are rendered the same, we expand the margins
-        #  as far as we can while keeping the center of the two points the same. That way if
-        #  font difference renders the subtitle larger than we expect the line won't break, but
-        #  the location will still be mostly correct.
-        if ($Lmargin > $Rmargin){
-          $Lmargin -= $Rmargin;
-          $Rmargin = 0;
-        } else {
-          $Rmargin -= $Lmargin;
-          $Lmargin = 0;
-        }
-        print WH "            <region xml:id=\"".$regname."\" tts:origin=\"".$Lmargin."c ".($starty + 2)."c\" tts:extent=\"".(48 - $Lmargin - $Rmargin)."c ".(17-$starty)."c\"/>\n";
+      $subtitle =~ s|{\\c3&H.{6}&}||g; # Strip background color
+      $subtitle =~ s|{\\a3&H.{2}&}||g; # Strip background alpha
+      # Encode special characters (per XML spec)
+      $subtitle =~ s|\"|&quot;|g; # Quotes
+      $subtitle =~ s|'|&apos;|g; # Apostrophes
+      $subtitle =~ s|<|&lt;|g; # Less Than
+      $subtitle =~ s|>|&gt;|g; # Greater Than
+      $subtitle =~ s|&|&amp;|g; # Ampersand
+      $subtitle =~ s|\n|''|g; # Replace newlines with double single quotes
+      # italics and underline will be a pain because you have to do Styles with fromchar and tochar. Plus side: you can do background via highlights. TO DO
+      # And now some positioning trickery. First, calculate the expected left and right margins
+      my $Lmargin = int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5);
+      my $Rmargin = ($ResX - int(($endx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5));
+      # ...now because we can't be certain fonts are rendered the same, we expand the margins
+      #  as far as we can while keeping the center of the two points the same. That way if
+      #  font difference renders the subtitle larger than we expect the line won't break, but
+      #  the location will still be mostly correct.
+      if ($Lmargin > $Rmargin){
+        $Lmargin -= $Rmargin;
+        $Rmargin = 0;
+      } else {
+        $Rmargin -= $Lmargin;
+        $Lmargin = 0;
       }
-      print TH "            <p xml:id=\"sub".sprintf("%05d", $subtitleNumber)."\" begin=\"".$tc1."\" end=\"".$tc2."\" region=\"".$regname."\">".$subtitle."</p>\n";
+      print WH "<TextSample sampleTime=\"".$tc1."\" text=\"'".$subtitle."'\">\n";
+      print WH "<TextBox top=\"".int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5)."\" left=\"".$Lmargin."\" bottom=\"".$ResY."\" right=\"".$Rmargin."\"/></TextSample>\n";
+      print WH "<TextSample sampleTime=\"".$tc2."\" text=\"''\"/>\n";
     }
     # SAMI support works in theory, but there's not a single modern player that actually
     #  honors the positioning information (or the font information, color, size....)
@@ -1313,15 +1567,66 @@ sub outputSubtitle {
       $ff = frame($endTime);
       $tc2 = sprintf("%d", ($ff / $fps * 1000) + 0.5);
       # subtitle manipulation
-      $subtitle =~ s/{\\c3&H.{6}&}//g; # Strip background color
-      $subtitle =~ s/{\\a3&H.{2}&}//g; # Strip background alpha
-#      $subtitle =~ s/\xa0/&nbsp;/g;
-      $subtitle =~ s/\n/<br>/g; # convert newlines to <br>
-      $subtitle =~ s/<br>$//; # then remove last one
+      if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c3&H.{6}&}/gi){
+        print "Warning: subtitle $subtitleNumber contains background color and/or alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
+      }
+      $subtitle =~ s|{\\c3&H.{6}&}||g; # Strip background color
+      $subtitle =~ s|{\\a3&H.{2}&}||g; # Strip background alpha
+      $subtitle =~ s|{\\i1}|<i>|g; # replace italics
+      $subtitle =~ s|{\\u1}|<u>|g; # replace underline
+      $subtitle =~ s|{\\i0}|</i>|g; # replace close italics
+      $subtitle =~ s|{\\u0}|</u>|g; # replace close underline
+      #$subtitle =~ s/\xa0/&nbsp;/g;
+      $subtitle =~ s|\n|<br>|g; # convert newlines to <br>
       # output subtitle
       print WH "<SYNC start=\"".$tc1."\"><P CLASS=\"".uc($Language)."\"><CaptionBlock PosX=".int(((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2))*3/4+0.5)."pt PosY=".int(((($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt>"; # STYLE=\"margin-left: ".$Lmargin."pt; margin-right: ".$Rmargin."pt; margin-top: ".int(((($starty/16*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt;\"
       print WH "<TT>".$subtitle."</TT></CaptionBlock></P></SYNC>\n";
       print WH "<SYNC start=\"".$tc2."\"><P CLASS=\"".uc($Language)."\">&nbsp;</P></SYNC>\n\n";
+    }
+    # Format added in the lost CCASDI 3.8. QTtext supports text box sizing and positioning
+    #  along with shirking text to fit the box size, all of which is perfect for captions
+    if ($convertFormat eq "Quicktime Caption") {
+      # timecode manipulation
+      ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
+      $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+      $tc1 = sprintf("[%02s:%02s:%02s.%03d] ", $hh, $mm, $ss, $ms);
+      ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
+      $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+      $tc2 = sprintf("[%02s:%02s:%02s.%03d]", $hh, $mm, $ss, $ms);
+      # subtitle manipulation
+      $subtitle =~ s/\n/\x0d/g; # convert newlines (LF\CRLF) to Mac newlines (CR)
+      my $red = 0;
+      my $blue = 0;
+      my $green = 0;
+      my $colortag = "";
+      # Search for any color tags and convert them to Quicktime syntax
+      while ($subtitle =~ m/{\\c&H(.{2})(.{2})(.{2})&}/) {
+        $red = hex($3) * 256;
+        $green = hex($2) * 256;
+        $blue = hex($1) * 256;
+        if (uc($3) eq "FF") { $red = 65535; }
+        if (uc($2) eq "FF") { $green = 65535; }
+        if (uc($1) eq "FF") { $blue = 65535; }
+        $colortag = sprintf("{textColor:%d,%d,%d}", $red, $green, $blue);
+        $subtitle =~ s/{\\c&H$1$2$3&}/$colortag/g;
+      }
+      # Warn about background alpha and color features not being supported.
+      if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c3&H.{6}&}/gi){
+        print "Warning: subtitle $subtitleNumber contains background color and/or alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
+      }
+      $subtitle =~ s|{\\c3&H.{6}&}||g; # Strip background color. We can only do all-or-nothing with QT: either the whole subtitle or none of it
+      $subtitle =~ s|{\\a3&H.{2}&}||g; # Strip background alpha
+      $subtitle =~ s/{\\i1}/{italic}/g; # Convert italic
+      $subtitle =~ s/{\\u1}/{underline}/g; # Convert underline
+      $subtitle =~ s|{\\[iu]0}|{plain}|g; # replace all end tags with {plain}. This may cause inaccuracies with nested italic+underline (TO DO)
+      # Get position and extent. We could do this inline but then it would look messy
+      my $Hpos = int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5);
+      my $Hlen = int(($endx-$startx)/32*($ResX*$Xratio));
+      my $Vpos = int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5);
+      my $Vlen = int(($endy-$starty)/15*($ResY*$Yratio));
+      # output subtitle. shrinkTextBox needs to be on for textBox to do anything
+      print WH $tc1."{shrinkTextBox:on}{textBox:".$Hpos.", ".$Vpos.", ".$Hlen.", ".$Vlen."}".$subtitle."\n";
+      print WH $tc2."\n"; # 2nd line clears screen
     }
     elsif ($convertFormat eq "SubStation Alpha") {
       # timecode manipulation
@@ -1334,18 +1639,20 @@ sub outputSubtitle {
       if($hs > 99){ $hs = 99;}
       $tc2 = sprintf("%01d:%02s:%02s.%02s", $hh, $mm, $ss, $hs);
       # subtitle manipulation
-      $subtitle =~ s/<i>/{\\i1}/g; # convert italic open
-      $subtitle =~ s|</i>|{\\i0}|g; # convert italic close
-      # Strictly speaking SSA does not support Underline tags, but most players will honor them
-      $subtitle =~ s/<u>/{\\u1}/g; # convert underline open
-      $subtitle =~ s|</u>|{\\u0}|g; # convert underline close
+      # Strictly speaking SSA does not support Underline tags, but most players will honor them. Print a warning if there were any though.
+      if ($subtitle =~ m|{\\u1}|gi){
+        print "Warning: subtitle $subtitleNumber contains underlines, which are not officially supported by the SubStation Alpha format but are USUALLY displayed correctly. If not, you may want to convert to Advanced SubStation instead.\n";
+      }
+      # SSA doesn't support background color and alpha changes either and those WON'T be displayed, so warn about that
+      if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c3&H.{6}&}/gi){
+        print "Warning: subtitle $subtitleNumber contains background color and/or alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
+      }
+      $subtitle =~ s|{\\c3&H.{6}&}||g; # Strip background color
+      $subtitle =~ s|{\\a3&H.{2}&}||g; # Strip background alpha
       $subtitle =~ s|\xa0|\\h|g; # Convert NBSP to \h
-      $subtitle =~ s/<font color=\"\#(.{2})(.{2})(.{2})\">/{\\c&H$3$2$1&}/g; # Convert all color tags
-      $subtitle =~ s|</font>|{\\c&Hffffff&}|g; # convert white
-      $subtitle =~ s/{\\c3&H.{6}&}//g; # Strip background color
-      $subtitle =~ s/{\\a3&H.{2}&}//g; # Strip background alpha
-      $subtitle =~ s/\n/\\N/g; # convert newlines to "\N" string
-      $subtitle =~ s/\\N$/\n/; # then put last newline back
+      $subtitle =~ s|\n|\\N|g; # convert newlines to "\N" string
+      # Strip any "close" tags that are at the end of the subtitle, since they aren't needed in SubStation formatting
+      $subtitle =~ s|({\\[iu]0})*({\\c&H.{6}&})*$||;
       # And now some positioning trickery. First, calculate the expected left and right margins
       my $Lmargin = int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5);
       my $Rmargin = ($ResX - int(($endx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5));
@@ -1361,7 +1668,7 @@ sub outputSubtitle {
         $Lmargin = 0;
       }
       # output subtitle
-      print WH "Dialogue: Marked=0,".$tc1.",".$tc2.",*Default,,".sprintf("%04d",$Lmargin).",".sprintf("%04d",$Rmargin).",".sprintf("%04d",int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5)).",,".$subtitle;
+      print WH "Dialogue: Marked=0,".$tc1.",".$tc2.",*Default,,".sprintf("%04d",$Lmargin).",".sprintf("%04d",$Rmargin).",".sprintf("%04d",int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5)).",,".$subtitle."\n";
     }
     elsif ($convertFormat eq "Advanced SubStation") {
       # timecode manipulation
@@ -1374,16 +1681,11 @@ sub outputSubtitle {
       if($hs > 99){ $hs = 99;}
       $tc2 = sprintf("%01d:%02s:%02s.%02s", $hh, $mm, $ss, $hs);
       # subtitle manipulation
-      $subtitle =~ s/<i>/{\\i1}/g; # convert italic open
-      $subtitle =~ s|</i>|{\\i0}|g; # convert italic close
-      $subtitle =~ s/<u>/{\\u1}/g; # convert underline open
-      $subtitle =~ s|</u>|{\\u0}|g; # convert underline close
-      $subtitle =~ s/<font color=\"\#(.{2})(.{2})(.{2})\">/{\\c&H$3$2$1&}/g; # Convert all color tags
-      $subtitle =~ s|</font>|{\\c&Hffffff&}|g; # convert white
-      $subtitle =~ s/\n/\\N/g; # convert newlines to "\N" string
-      $subtitle =~ s/\\N$/\n/; # then put last newline back
-      # output subtitle
-      print WH "Dialogue: 0,".$tc1.",".$tc2.",*Default,,0000,0000,0000,,{\\pos(".int((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5).",".int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5).")}".$subtitle;
+      $subtitle =~ s|\n|\\N|g; # convert newlines to "\N" string
+      # Strip any "close" tags that are at the end of the subtitle, since they aren't needed in SubStation formatting
+      $subtitle =~ s|({\\[iu]0})*({\\c3?&H.{6}&})*({\\a3&H.{2}&})*$||;
+      # output subtitle. Unlike SSA we can just use the "pos" tag override to set the position directly, no funky margin trickery needed.
+      print WH "Dialogue: 0,".$tc1.",".$tc2.",*Default,,0000,0000,0000,,{\\pos(".int((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5).",".int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5).")}".$subtitle."\n";
     }
     # $startTime = "";
     # $endTime = "";
@@ -1396,6 +1698,8 @@ sub outputFooter {
   my $convertFormat = shift(@_);
   
   # Y|y - check for a temp file and write those lines to the output file
+  #  Nothing uses this now that I've figured out the new way to do TTML,
+  #  but I'll leave it in for possible future use
   if($writeTemp){
     seek(TH, 0, 0);
     while(<TH>){
@@ -1411,6 +1715,9 @@ sub outputFooter {
   }
   elsif ($convertFormat eq "Timed Text Markup Language") {
     print WH "        </div>\n    </body>\n</tt>";
+  }
+  elsif ($convertFormat eq "GPAC Timed Text"){
+    print WH "</TextStream>";
   }
 }
 
@@ -7225,7 +7532,7 @@ sub asChar {
   if ($byte eq "~") {
     die "Invalid character {".$char."} in line $. of $input, stopped";
   }
-  if ($mode != "ITV") { # ITV doesn't use odd parity
+  if ($mode ne "ITV") { # ITV doesn't use odd parity
     $byte = sprintf("%02x", oddParity(hex $byte));
   }
   return $byte;

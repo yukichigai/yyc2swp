@@ -37,18 +37,30 @@ NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is contro
 Captions are converted assuming a 4:3 NTSC display resolution (640x480 in square pixels) and padded for overscan. I intend to add options for overriding the target resolution, aspect ratio, and overscan at a later date.
 
 ## Current conversion quality
-Currently Advanced SubStation (ASS) produces the most consistent output for commonly used players (VLC, MPC, MPV, Jellyfin) closely followed by normal SubStation (SSA). Timed Text Markup Language (TTML/DFXP) is unsupported by some players (MPV) and produces less visually consistent results, though still positionally accurate; it is supported fully by numerous web-based players as well. WebVTT (VTT) output is very accurate for web-based players, but formatting support is spotty at best for most software (e.g. VLC does not process left/right positioning, MPV does not process positioning at all).
+Advanced SubStation (ASS) produces the most consistent output for commonly used players (VLC, MPC, MPV, Jellyfin). It supports all Closed Caption features other than flashing text. Overall it is the most compatible and accurate format, thus why it is the default.
 
-TTML/DFXP conversion may be inaccurate for text with overlapping formatting and/or color changes (e.g. italic for a few characters, then underlined + italic, then no italic but still underlined, so on). This is because TTML uses the same tag (span) for all formatting and color changes. Argh! WebVTT may also produce inaccurate results for text with multiple color changes; other text formatting is not affected and should be preserved accurately.
+SubStation Alpha (SSA) output is just as accurate as ASS for positioning and text color, but does not support background color and alpha effects (which are rearely used). SSA also technically does not support Underlined text, though most players will render it regardless. Generally most players that support SSA will support ASS, so there is little reason to use it over the other format.
 
-SAMI output is currently a hot mess (official term) and still in progress. The format may be dropped owing to poor feature support among most players.
+Timed Text Markup Language/SMPTE-TT (TTML/DFXP) is unsupported by some players (MPV, MPC) and produces less visually consistent results in others (VLC). However, on web-based players and professional authoring software it has better support and more accuracy than any other format.
+
+WebVTT (VTT) output is very accurate for web-based players, but styling support is spotty at best for most software (e.g. VLC does not process left/right positioning, MPV and MPC do not process positioning at all).
+
+GPAC Timed Text (TTXT) is functional but does not scale with resolution well, especially anamorphic content. Its primary use is conversion to TX3G, which has not been fully tested. The format should be considered a work in progress.
+
+SAMI output is currently a hot mess (official term) and still in progress. I have yet to find a player that definitively supports all SAMI features to test with. The format may be dropped owing to poor feature support among most players.
+
+Quicktime Caption (QT.TXT) output is currently untested. It also should be considered a work in progress, and may also be dropped in the future.
 
 # Credits
 This script is modified from CCASDI by McPoodle. Almost all of the caption parsing and SCC <-> CCD conversion logic is their work.
 
 Thanks to Emulgator on Doom9 for their analysis of the output from the [Zilog z86229 Closed Caption Decoder chip](https://www.zilog.com/docs/tv/z86229.pdf), which was used as the basis for the caption positioning and overscan compensation logic.
 
+Thanks also to bbgdzxng1 for sharing the lost version 3.8 of CCASDI.
+
 # Changelog
+
+0.7 Add in code changes from the "lost" CCASDI version 3.8; thanks to bbgdzxng1 for finding this. Change TTML and WebVTT generation to prevent inaccuracies with nested styling changes (color, italic, etc). Change TTML generation to be SMPTE-TT specification compliant (I think) per documentation from PBS. Add initial, largely untested support for Quicktime Caption (QT.TXT) from 3.8 and GPAC Timed Text (TTXT). Add warning messages when captions with certain styling are converted to formats which do not support them (e.g. background color in SSA).
 
 0.6 Improve WebVTT output, add more formatting support to TTML. Add warning for WebVTT and TTML when multiple formatting changes are present in a subtitle due to possible inaccuracies in conversion. WebVTT output is technically accurate for web, but less so for VLC/MPC.
 
