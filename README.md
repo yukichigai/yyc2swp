@@ -39,7 +39,7 @@ Captions are converted assuming a 4:3 NTSC display resolution (640x480 in square
 ## Current conversion quality
 Advanced SubStation (ASS) produces the most consistent output for commonly used players (VLC, MPC, MPV, Jellyfin). It supports all Closed Caption features other than flashing text. Overall it is the most compatible and accurate format, thus why it is the default.
 
-SubStation Alpha (SSA) output is just as accurate as ASS for positioning and text color, but does not support background color and alpha effects (which are rearely used). SSA also technically does not support Underlined text, though most players will render it regardless. Generally most players that support SSA will support ASS, so there is little reason to use it over the other format.
+SubStation Alpha (SSA) output is just as accurate as ASS for positioning and text color, but does not support background color and alpha effects (which are rarely used). SSA also technically does not support Underlined text, though most players will render it regardless. Generally most players that support SSA will support ASS, so there is little reason to use it over the other format.
 
 Timed Text Markup Language/SMPTE-TT (TTML/DFXP) is unsupported by some players (MPV, MPC) and produces less visually consistent results in others (VLC). However, on web-based players and professional authoring software it has better support and more accuracy than any other format.
 
