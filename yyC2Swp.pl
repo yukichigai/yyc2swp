@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "0.7";
+my $Version = "0.8";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -109,6 +109,11 @@ my $Version = "0.7";
 #	to match SMPTE-TT spec using documentation from PBS. This includes breaking up
 #	subtitles into individual entries for each line, which partially alleviates but
 #	does not fully fix the display inconsistencies with the format on VLC.
+# 0.8 Split SMPTE-TT conversion from TTML; while SMPTE-TT is a type of TTML, it has
+#   specific restrictions and requirements (like displaying background color) that are
+#   not the same as what people might want from TTML. Change box drawing characters from
+#   Unicode 2300 series to Unicode 2500 series per SMPTE-TT. Change a few other
+#   characters to Unicode per SMPTE-TT.
 sub usage;
 sub frame;
 sub timecodeof;
@@ -299,6 +304,7 @@ if ($output eq "~") {
        elsif ($suffix =~ m/ssa/i) { $convertFormat = "SubStation Alpha"; }
        elsif ($suffix =~ m/ass/i) { $convertFormat = "Advanced SubStation"; }
        elsif ($suffix =~ m/ttml|dfxp/i) { $convertFormat = "Timed Text Markup Language"; } # $writeTemp = 1;
+       elsif ($suffix =~ m/xml/i){ $convertFormat = "SMPTE-TT"; }
        elsif ($suffix =~ m/ttxt/i) { $convertFormat = "GPAC Timed Text"; }
        elsif ($output =~ m/(.*)(\.qt\.txt)$/i) { $convertFormat = "Quicktime Caption"; $suffix = ".qt.txt"; }
        $convert = 1;
@@ -821,8 +827,8 @@ sub usage {
   print "         NTSC timebase: d (dropframe) or n (non-dropframe) (DEFAULT: n)\n";
   print "  NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is\n";
   print "    controlled by outfile suffix: .vtt WebVTT, .smi/.sami SAMI, .ssa SubStation Alpha,\n";
-  print "    .ttml/.dfxp SMPTE-TT/Timed Text Markup Language, .qt.txt Quicktime Caption,\n";
-  print "    .ttxt GPAC Timed Text, .ass Advanced SubStation (default),\n";
+  print "    .ttml/.dfxp Timed Text Markup Language, .xml SMPTE-TT, .qt.txt Quicktime Caption,\n";
+  print "    .ttxt GPAC Timed Text, .ass Advanced SubStation (default), or\n";
   print "    .ccd SCC Disassembly (SCC input only).\n\n";
 }
 
@@ -994,6 +1000,7 @@ sub convertToSub {
   $underlined = 0;
   $italicized = 0;
   $bgcolor = "B";
+  if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
 
   $startx = 39;
   $starty = 16;
@@ -1028,10 +1035,11 @@ sub convertToSub {
     #  tags on the final line of the subtitle
     if ($_row > $starty){
       # TTML has to be output per-line, so we need to close the span tags if there are any open (and reset values)
-      if(($convertFormat eq "Timed Text Markup Language") and (($color ne "0") or ($bgcolor ne "B") or ($italicized) or ($underlined))){
+      if(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($italicized) or ($underlined))){
         $subtitle = $subtitle."</span>";
         $color = "0";
         $bgcolor = "B";
+        if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
         $italicized = 0;
         $underlined = 0;
       }
@@ -1039,18 +1047,27 @@ sub convertToSub {
     }
     for (my $_col = $startx; $_col < $endx; $_col++) {
       if ($character[$_row][$_col] eq "\x00") {
+        # End the spans on SMPTE-TT and TTML so we don't get background color where there's just blank space
+        if(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($italicized) or ($underlined))){
+          $subtitle = $subtitle."</span>";
+          $color = "0";
+          $bgcolor = "B";
+          if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
+          $italicized = 0;
+          $underlined = 0;
+        }
         $subtitle = $subtitle."\xa0"; # add a no-break space
       # Y|y - new stuff. Some formats need special handling during construction, not after (TTML, TTXT, VTT)
-      } elsif ($convertFormat eq "Timed Text Markup Language") { # TTML uses span tags for EVERYTHING, so nesting them risks inaccurate conversion. Whenever there is a format change we need to close the span and open a new one
+      } elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") { # TTML uses span tags for EVERYTHING, so nesting them risks inaccurate conversion. Whenever there is a format change we need to close the span and open a new one
         # Any formatting change means we need to redo span tags
         $preformat = 1;
         if(($color[$_row][$_col] ne $color) or ($underlined[$_row][$_col] ne $underlined) or ($italicized[$_row][$_col] ne $italicized) or ($bgcolor[$_row][$_col] ne $bgcolor)){
           # If there were any existing formats then we need to close the span
-          if(($color ne "0") or ($bgcolor ne "B") or ($underlined) or ($italicized)){
+          if(($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($underlined) or ($italicized)){
             $subtitle = $subtitle."</span>";
           }
           # If there's anything different from default, start a new span
-          if(($color[$_row][$_col] ne "0") or ($bgcolor[$_row][$_col] ne "B") or $italicized[$_row][$_col] or $underlined[$_row][$_col]){
+          if(($color[$_row][$_col] ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor[$_row][$_col] ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor[$_row][$_col] ne "T")) or $italicized[$_row][$_col] or $underlined[$_row][$_col]){
             # Start the span
             $subtitle = $subtitle."<span";
             # Now see what changed. Start with color
@@ -1058,68 +1075,77 @@ sub convertToSub {
               if ($color[$_row][$_col] eq "0") { # White
                 $subtitle = $subtitle." tts:color=\"white\"";
               }
-              if ($color[$_row][$_col] eq "1") { # Green (Lime in modern standards)
-                $subtitle = $subtitle." tts:color=\"lime\"";
+              elsif ($color[$_row][$_col] eq "1") { # Green
+                if($convertFormat eq "SMPTE-TT"){
+                  $subtitle = $subtitle." tts:color=\"green\""; # per SMPTE-TT documentation we need to use green for text, not full-green AKA lime
+                } else {
+                  $subtitle = $subtitle." tts:color=\"lime\"";
+                }
               }
-              if ($color[$_row][$_col] eq "2") { # Blue
+              elsif ($color[$_row][$_col] eq "2") { # Blue
                 $subtitle = $subtitle." tts:color=\"blue\"";
               }
-              if ($color[$_row][$_col] eq "3") { # Cyan (AKA Aqua)
+              elsif ($color[$_row][$_col] eq "3") { # Cyan (AKA Aqua)
                 $subtitle = $subtitle." tts:color=\"cyan\"";
               }
-              if ($color[$_row][$_col] eq "4") { # Red
+              elsif ($color[$_row][$_col] eq "4") { # Red
                 $subtitle = $subtitle." tts:color=\"red\"";
               }
-              if ($color[$_row][$_col] eq "5") { # Yellow
+              elsif ($color[$_row][$_col] eq "5") { # Yellow
                 $subtitle = $subtitle." tts:color=\"yellow\"";
               }
-              if ($color[$_row][$_col] eq "6") { # Magenta (AKA Fuchsia)
+              elsif ($color[$_row][$_col] eq "6") { # Magenta (AKA Fuchsia)
                 $subtitle = $subtitle." tts:color=\"magenta\"";
               }
-              if ($color[$_row][$_col] eq "8") { # Black
+              elsif ($color[$_row][$_col] eq "8") { # Black
                 $subtitle = $subtitle." tts:color=\"black\"";
               }
             }
-            # Now background color (and alpha)
-            if ($bgcolor[$_row][$_col] ne "B") {
-              # Check if the background color changed or just the transparency (upper vs lower)
-              # Start with the color portion
-              if(uc($bgcolor) ne uc($bgcolor[$_row][$_col])){
-  	        if (uc($bgcolor[$_row][$_col]) eq "W") { # White
-	          $subtitle = $subtitle." tts:backgroundColor=\"#FFFFFF"; 
-    	        }
-  	        if (uc($bgcolor[$_row][$_col]) eq "G") { # Green
-                  $subtitle = $subtitle." tts:backgroundColor=\"#00FF00";
-                }
-                if (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
-                  $subtitle = $subtitle." tts:backgroundColor=\"#0000FF";
-                }
-                if (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
-                  $subtitle = $subtitle." tts:backgroundColor=\"#00FFFF";
-                }
-                if (uc($bgcolor[$_row][$_col]) eq "R") { # Red
-                  $subtitle = $subtitle." tts:backgroundColor=\"#FF0000";
-                }
-                if (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
-                  $subtitle = $subtitle." tts:backgroundColor=\"#FFFF00";
-                }
-                if (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
-                  $subtitle = $subtitle." tts:backgroundColor=\"#FF00FF";
-                }
-                if (uc($bgcolor[$_row][$_col]) eq "B") { # Black
-                  $subtitle = $subtitle." tts:backgroundColor=\"#000000";
-                }
-              }
-              # Handle transparency
+            # Now background color (and alpha). Skip Black for TTML, Transparent for SMPTE-TT
+            if (($convertFormat eq "Timed Text Markup Language" and $bgcolor[$_row][$_col] ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor[$_row][$_col] ne "T")) {
+              # Fully transparent is simple
               if (uc($bgcolor[$_row][$_col]) eq "T") { # Transparent
                 $subtitle = $subtitle." tts:backgroundColor=\"transparent\"";
               }
-              elsif(uc($bgcolor) eq $bgcolor and uc($bgcolor[$_row][$_col]) ne $bgcolor[$_row][$_col]){ # Semi-transparent (lowercase)
-  	        $subtitle = $subtitle."80\"";
-	      }
-	      elsif(uc($bgcolor) ne $bgcolor and uc($bgcolor[$_row][$_col]) eq $bgcolor[$_row][$_col]){ # Opaque (uppercase)
-	        $subtitle = $subtitle."FF\"";
-	      }
+              else {
+                $subtitle = $subtitle." tts:backgroundColor=\"";
+
+                # Start with the color
+                if (uc($bgcolor[$_row][$_col]) eq "W") { # White
+                  $subtitle = $subtitle."FFFFFF";
+                }
+                elsif (uc($bgcolor[$_row][$_col]) eq "G") { # Green. Per SMPTE-TT documentation we use full-green (lime) for background, but alias green for text
+                  $subtitle = $subtitle."00FF00";
+                }
+                elsif (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
+                  $subtitle = $subtitle."0000FF";
+                }
+                elsif (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
+                  $subtitle = $subtitle."00FFFF";
+                }
+                elsif (uc($bgcolor[$_row][$_col]) eq "R") { # Red
+                  $subtitle = $subtitle."FF0000";
+                }
+                elsif (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
+                  $subtitle = $subtitle."FFFF00";
+                }
+                elsif (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
+                  $subtitle = $subtitle."FF00FF";
+                }
+                elsif (uc($bgcolor[$_row][$_col]) eq "B") { # Black
+                  $subtitle = $subtitle."000000";
+                }
+                else { # No idea how we got here, but we need to output something, Purple. I like purple
+                  $subtitle = $subtitle."800080";
+                }
+                # Now add the transparency
+                if(uc($bgcolor[$_row][$_col]) ne $bgcolor[$_row][$_col]){ # Semi-transparent (lowercase)
+                  $subtitle = $subtitle."88\"";
+                }
+                elsif(uc($bgcolor[$_row][$_col]) eq $bgcolor[$_row][$_col]){ # Opaque (uppercase)
+                  $subtitle = $subtitle."FF\"";
+                }
+              }
             }
             if($italicized[$_row][$_col]){
               $subtitle = $subtitle." tts:fontStyle=\"italic\"";
@@ -1153,25 +1179,25 @@ sub convertToSub {
               if ($color[$_row][$_col] eq "0") { # White
                 $subtitle = $subtitle.".white";
               }
-              if ($color[$_row][$_col] eq "1") { # Green (Lime in modern standards)
+              elsif ($color[$_row][$_col] eq "1") { # Green (Lime in modern standards)
                 $subtitle = $subtitle.".lime";
               }
-              if ($color[$_row][$_col] eq "2") { # Blue
+              elsif ($color[$_row][$_col] eq "2") { # Blue
                 $subtitle = $subtitle.".blue";
               }
-              if ($color[$_row][$_col] eq "3") { # Cyan 
+              elsif ($color[$_row][$_col] eq "3") { # Cyan
                 $subtitle = $subtitle.".cyan";
               }
-              if ($color[$_row][$_col] eq "4") { # Red
+              elsif ($color[$_row][$_col] eq "4") { # Red
                 $subtitle = $subtitle.".red";
               }
-              if ($color[$_row][$_col] eq "5") { # Yellow
+              elsif ($color[$_row][$_col] eq "5") { # Yellow
                 $subtitle = $subtitle.".yellow";
               }
-              if ($color[$_row][$_col] eq "6") { # Magenta
+              elsif ($color[$_row][$_col] eq "6") { # Magenta
                 $subtitle = $subtitle.".magenta";
               }
-              if ($color[$_row][$_col] eq "8") { # Black
+              elsif ($color[$_row][$_col] eq "8") { # Black
                 $subtitle = $subtitle.".black";
               }
             }
@@ -1180,25 +1206,25 @@ sub convertToSub {
               # Check if the background color changed or just the transparency (upper vs lower)
               # Start with the color portion
               if(uc($bgcolor) ne uc($bgcolor[$_row][$_col])){
-  	        if (uc($bgcolor[$_row][$_col]) eq "W") { # White
-	          $subtitle = $subtitle.".bg_white"; 
+  	            if (uc($bgcolor[$_row][$_col]) eq "W") { # White
+	              $subtitle = $subtitle.".bg_white";
     	        }
-  	        if (uc($bgcolor[$_row][$_col]) eq "G") { # Green (Lime)
+  	            elsif (uc($bgcolor[$_row][$_col]) eq "G") { # Green (Lime)
                   $subtitle = $subtitle.".bg_lime";
                 }
-                if (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
+                elsif (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
                   $subtitle = $subtitle.".bg_blue";
                 }
-                if (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
+                elsif (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
                   $subtitle = $subtitle.".bg_cyan";
                 }
-                if (uc($bgcolor[$_row][$_col]) eq "R") { # Red
+                elsif (uc($bgcolor[$_row][$_col]) eq "R") { # Red
                   $subtitle = $subtitle.".bg_red";
                 }
-                if (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
+                elsif (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
                   $subtitle = $subtitle.".bg_yellow";
                 }
-                if (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
+                elsif (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
                   $subtitle = $subtitle.".bg_magenta";
                 }
                 # Commenting out since we want black to be converted as transparent.
@@ -1239,25 +1265,25 @@ sub convertToSub {
           if ($color[$_row][$_col] eq "0") { # White
             $subtitle = $subtitle."{\\c&HFFFFFF&}";
           }
-          if ($color[$_row][$_col] eq "1") { # Green
+          elsif ($color[$_row][$_col] eq "1") { # Green
             $subtitle = $subtitle."{\\c&H00FF00&}";
           }
-          if ($color[$_row][$_col] eq "2") { # Blue
+          elsif ($color[$_row][$_col] eq "2") { # Blue
             $subtitle = $subtitle."{\\c&HFF0000&}";
           }
-          if ($color[$_row][$_col] eq "3") { # Cyan
+          elsif ($color[$_row][$_col] eq "3") { # Cyan
             $subtitle = $subtitle."{\\c&HFFFF00&}";
           }
-          if ($color[$_row][$_col] eq "4") { # Red
+          elsif ($color[$_row][$_col] eq "4") { # Red
             $subtitle = $subtitle."{\\c&H0000FF&}";
           }
-          if ($color[$_row][$_col] eq "5") { # Yellow
+          elsif ($color[$_row][$_col] eq "5") { # Yellow
             $subtitle = $subtitle."{\\c&H00FFFF&}";
           }
-          if ($color[$_row][$_col] eq "6") { # Magenta
+          elsif ($color[$_row][$_col] eq "6") { # Magenta
             $subtitle = $subtitle."{\\c&HFF00FF&}";
           }
-          if ($color[$_row][$_col] eq "8") { # Black
+          elsif ($color[$_row][$_col] eq "8") { # Black
             $subtitle = $subtitle."{\\c&H000000&}";
           }
           $color = $color[$_row][$_col];
@@ -1265,28 +1291,28 @@ sub convertToSub {
         if ($bgcolor[$_row][$_col] ne $bgcolor) {
           # Check if the background color changed or just the transparency (upper vs lower)
           if(uc($bgcolor) ne uc($bgcolor[$_row][$_col])){
-	    if (uc($bgcolor[$_row][$_col]) eq "W") { # White
+	        if (uc($bgcolor[$_row][$_col]) eq "W") { # White
 	          $subtitle = $subtitle."{\\c3&HFFFFFF&}"; 
-	    }
-	    if (uc($bgcolor[$_row][$_col]) eq "G") { # Green
+	        }
+	        elsif (uc($bgcolor[$_row][$_col]) eq "G") { # Green
               $subtitle = $subtitle."{\\c3&H00FF00&}";
             }
-            if (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
+            elsif (uc($bgcolor[$_row][$_col]) eq "U") { # Blue
               $subtitle = $subtitle."{\\c3&HFF0000&}";
             }
-            if (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
+            elsif (uc($bgcolor[$_row][$_col]) eq "C") { # Cyan
               $subtitle = $subtitle."{\\c3&HFFFF00&}";
             }
-            if (uc($bgcolor[$_row][$_col]) eq "R") { # Red
+            elsif (uc($bgcolor[$_row][$_col]) eq "R") { # Red
               $subtitle = $subtitle."{\\c3&H0000FF&}";
             }
-            if (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
+            elsif (uc($bgcolor[$_row][$_col]) eq "Y") { # Yellow
               $subtitle = $subtitle."{\\c3&H00FFFF&}";
             }
-            if (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
+            elsif (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
               $subtitle = $subtitle."{\\c3&HFF00FF&}";
             }
-            if (uc($bgcolor[$_row][$_col]) eq "B") { # Black
+            elsif (uc($bgcolor[$_row][$_col]) eq "B") { # Black
               $subtitle = $subtitle."{\\c3&H000000&}";
             }
           }
@@ -1295,11 +1321,11 @@ sub convertToSub {
             $subtitle = $subtitle."{\\a3&HFF&}";
           }
           elsif(uc($bgcolor) eq $bgcolor and uc($bgcolor[$_row][$_col]) ne $bgcolor[$_row][$_col]){ # Semi-transparent (lowercase)
-  	     $subtitle = $subtitle."{\\a3&H80&}";
-	  }
-	  elsif(uc($bgcolor) ne $bgcolor and uc($bgcolor[$_row][$_col]) eq $bgcolor[$_row][$_col]){ # Opaque (uppercase)
-	     $subtitle = $subtitle."{\\a3&H00&}";
-	  }
+  	        $subtitle = $subtitle."{\\a3&H80&}";
+	      }
+	      elsif(uc($bgcolor) ne $bgcolor and uc($bgcolor[$_row][$_col]) eq $bgcolor[$_row][$_col]){ # Opaque (uppercase)
+	        $subtitle = $subtitle."{\\a3&H00&}";
+	      }
           $bgcolor = $bgcolor[$_row][$_col];
         }
         if ($underlined[$_row][$_col] ne $underlined) {
@@ -1332,6 +1358,13 @@ sub convertToSub {
       $italicized = 0;
       $subtitle = $subtitle."{\\i0}";
     }
+  } elsif(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($italicized) or ($underlined))){
+    $subtitle = $subtitle."</span>";
+    $color = "0";
+    $bgcolor = "B";
+    if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
+    $italicized = 0;
+    $underlined = 0;
   }
   # Now we need to readjust the y coordinates to be zero-indexed (i.e. subtract one from each)
   #  Otherwise vertical positioning math will be slightly off
@@ -1350,20 +1383,31 @@ sub outputHeader {
     print WH "NOTE Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n\n";
   }
   # SMPTE-TT compliant (I think) thanks to https://docs.pbs.org/space/MM/5344210/Closed+Captioning
-  elsif ($convertFormat eq "Timed Text Markup Language"){
+  # Also https://pub.smpte.org/latest/rp2052-10/rp2052-10-2013.pdf
+  elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT"){
     print WH "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-    print WH "<tt xmlns=\"http://www.w3.org/2006/10/ttaf1\" xmlns:tts=\"http://www.w3.org/2006/10/ttaf1#styling\" xmlns:ttm=\"http://www.w3.org/2006/10/ttaf1#metadata\" xmlns:smpte=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt\" xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"\n";
+    if($convertFormat eq "SMPTE-TT"){
+      print WH "<tt xmlns=\"http://www.w3.org/2006/10/ttaf1\" xmlns:tts=\"http://www.w3.org/2006/10/ttaf1#styling\" xmlns:ttm=\"http://www.w3.org/2006/10/ttaf1#metadata\" xmlns:smpte=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt\" xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"\n";
+    } else {
+      print WH "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttp=\"http://www.w3.org/ns/ttml#parameter\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\" xmlns:xml=\"http://www.w3.org/XML/1998/namespace\" ttp:timeBase=\"media\"\n";
+    }
     # By default TTML divides the video into 32 horizontal cells and 15 vertical cells, just like captions. Unfortunately it doesn't
     #  account for overscan, so add some extra padding to mimic how captions are rendered on analog devices (and how they were designed)
     print WH "  xml:lang=\"".$LangCode."\" ttp:cellResolution=\"96 36\">\n"; # Double both values since VLC doesn't support non-uniform font scaling
     print WH "  <head>\n        <metadata>\n            <ttm:title>".$Language." Closed Captions</ttm:title>\n";
     $input =~ m/.*\.(.*)$/;
     print WH "            <ttm:desc>Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)</ttm:desc>\n";
-    print WH "            <smpte:information xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\" origin=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\""; 
-    if ($channel < 0){$channel = 1;} # Default to 1 if we don't have a channel specified
-    print WH " mode=\"Preserved\" m608:channel=\"CC".$channel."\" m608:captionService=\"F1C".$channel."CC\"/>\n";
-    print WH "        </metadata>\n        <styling>\n";
-    print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"Courier New\" tts:fontSize=\"2c\" tts:fontWeight=\"bold\"/>\n";
+    # TO DO: add XDS data to header
+    if($convertFormat eq "SMPTE-TT"){
+      print WH "            <smpte:information xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\" origin=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"";
+      if ($channel < 0){$channel = 1;} # Default to 1 if we don't have a channel specified
+      print WH " mode=\"Preserved\" m608:channel=\"CC".$channel."\" m608:captionService=\"F1C".$channel."CC\"/>\n";
+      print WH "        </metadata>\n        <styling>\n";
+      print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"monospace\" tts:fontSize=\"2c\"/>\n";
+    } else {
+      print WH "        </metadata>\n        <styling>\n";
+      print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"Courier New\" tts:fontSize=\"2c\" tts:fontWeight=\"bold\"/>\n";
+    }
     print WH "        </styling>\n        <layout>\n";
     print WH "          <region xml:id=\"pop1\" tts:backgroundColor=\"transparent\"/>\n";
     print WH "          <region xml:id=\"pop2\" tts:backgroundColor=\"transparent\"/>\n";
@@ -1484,7 +1528,7 @@ sub outputSubtitle {
       #}
       print WH $subtitle."\n\n";
     }
-    elsif ($convertFormat eq "Timed Text Markup Language"){
+    elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT"){
       # timecode manipulation
       ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
       $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
@@ -1514,7 +1558,7 @@ sub outputSubtitle {
       }
       # If we generated more than 4 lines of captions warn that this isn't SMPTE-TT compliant and the lines will probably not show up
       if($regionnum > 5){
-      	print "Warning: subtitle $subtitleNumber has more than 4 lines of text, which is not SMPTE-TT (or EIA-608) compliant. Some lines will likely not be displayed.\n";
+      	print "Warning: subtitle $subtitleNumber has more than 4 lines of text, which is not SMPTE-TT (or CEA-608) compliant. Some lines will likely not be displayed.\n";
       }
     }
     elsif ($convertFormat eq "GPAC Timed Text"){
@@ -1713,7 +1757,7 @@ sub outputFooter {
   if ($convertFormat eq "SAMI") {
     print WH "</BODY>\n</SAMI>\n";
   }
-  elsif ($convertFormat eq "Timed Text Markup Language") {
+  elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") {
     print WH "        </div>\n    </body>\n</tt>";
   }
   elsif ($convertFormat eq "GPAC Timed Text"){
@@ -1852,7 +1896,7 @@ sub disCommand {
           /34/ && do {$commandtoken = "\N{U+2122}"; last SWITCH;}; # {tm}
           /35/ && do {$commandtoken = "¢"; last SWITCH;};
           /36/ && do {$commandtoken = "£"; last SWITCH;};
-          /37/ && do {$commandtoken = "\N{U+266a}"; last SWITCH;}; # {note}
+          /37/ && do {$commandtoken = "\N{U+266A}"; last SWITCH;}; # {note}
           /38/ && do {$commandtoken = "à"; last SWITCH;};
           /39/ && do {$commandtoken = " "; last SWITCH;};
           /3a/ && do {$commandtoken = "è"; last SWITCH;};
@@ -2003,12 +2047,12 @@ sub disCommand {
           /27/ && do {$commandtoken = "¡"; $extendedChar = 1; last SWITCH;};
           /28/ && do {$commandtoken = "*"; $extendedChar = 1; last SWITCH;};
           /29/ && do {$commandtoken = "'"; $extendedChar = 1; last SWITCH;};
-          /2a/ && do {$commandtoken = "-"; $extendedChar = 1; last SWITCH;};
+          /2a/ && do {$commandtoken = "\N{U+2014}"; $extendedChar = 1; last SWITCH;}; # em dash
           /2b/ && do {$commandtoken = "©"; $extendedChar = 1; last SWITCH;};
           /2c/ && do {$commandtoken = "\N{U+2120}"; $extendedChar = 1; last SWITCH;}; # {sm}
-          /2d/ && do {$commandtoken = "·"; $extendedChar = 1; last SWITCH;};
-          /2e/ && do {$commandtoken = "\""; $extendedChar = 1; last SWITCH;};
-          /2f/ && do {$commandtoken = "\""; $extendedChar = 1; last SWITCH;};
+          /2d/ && do {$commandtoken = "\N{U+2022}"; $extendedChar = 1; last SWITCH;}; # bullet
+          /2e/ && do {$commandtoken = "\N{U+201C}"; $extendedChar = 1; last SWITCH;}; # left double quote
+          /2f/ && do {$commandtoken = "\N{U+201D}"; $extendedChar = 1; last SWITCH;}; # right double quote
           /30/ && do {$commandtoken = "À"; $extendedChar = 1; last SWITCH;};
           /31/ && do {$commandtoken = "Â"; $extendedChar = 1; last SWITCH;};
           /32/ && do {$commandtoken = "Ç"; $extendedChar = 1; last SWITCH;};
@@ -2157,6 +2201,8 @@ sub disCommand {
       };
       /13/ && do {
         for ($lo) {
+          /ad/ && do {$commandtoken = "_"; $extendedChar = 1; last SWITCH;}; # Low Line
+          /ae/ && do {$commandtoken = "|"; $extendedChar = 1; last SWITCH;}; # Broken Bar
           /20/ && do {$commandtoken = "Ã"; $extendedChar = 1; last SWITCH;};
           /21/ && do {$commandtoken = "ã"; $extendedChar = 1; last SWITCH;};
           /22/ && do {$commandtoken = "Í"; $extendedChar = 1; last SWITCH;};
@@ -2180,15 +2226,15 @@ sub disCommand {
           /34/ && do {$commandtoken = "ß"; $extendedChar = 1; last SWITCH;};
           /35/ && do {$commandtoken = "¥"; $extendedChar = 1; last SWITCH;};
           /36/ && do {$commandtoken = "¤"; $extendedChar = 1; last SWITCH;};
-          /37/ && do {$commandtoken = "|"; $extendedChar = 1; last SWITCH;};
+          /37/ && do {$commandtoken = "\N{U+2503}"; $extendedChar = 1; last SWITCH;}; # Heavy Vertical
           /38/ && do {$commandtoken = "Å"; $extendedChar = 1; last SWITCH;};
           /39/ && do {$commandtoken = "å"; $extendedChar = 1; last SWITCH;};
           /3a/ && do {$commandtoken = "Ø"; $extendedChar = 1; last SWITCH;};
           /3b/ && do {$commandtoken = "ø"; $extendedChar = 1; last SWITCH;};
-          /3c/ && do {$commandtoken = "\N{U+231C}"; $extendedChar = 1; last SWITCH;}; # {ul}
-          /3d/ && do {$commandtoken = "\N{U+231D}"; $extendedChar = 1; last SWITCH;}; # {ur}
-          /3e/ && do {$commandtoken = "\N{U+231E}"; $extendedChar = 1; last SWITCH;}; # {ll}
-          /3f/ && do {$commandtoken = "\N{U+231F}"; $extendedChar = 1; last SWITCH;}; # {lr}
+          /3c/ && do {$commandtoken = "\N{U+250F}"; $extendedChar = 1; last SWITCH;}; # {ul}
+          /3d/ && do {$commandtoken = "\N{U+2513}"; $extendedChar = 1; last SWITCH;}; # {ur}
+          /3e/ && do {$commandtoken = "\N{U+2517}"; $extendedChar = 1; last SWITCH;}; # {ll}
+          /3f/ && do {$commandtoken = "\N{U+251B}"; $extendedChar = 1; last SWITCH;}; # {lr}
           /40/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "0";
                       $underlined = 0; $italicized = 0; last SWITCH;};
           /41/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "0";
@@ -4525,7 +4571,7 @@ sub disChar {
       if ($mode eq "ITV") {$char = "~";} else {$char = "ñ";}
       last SWITCH;};
     /7f/ && do {
-      if ($mode eq "ITV") {$char = "£";} else {$char = "|";}
+      if ($mode eq "ITV") {$char = "£";} else {$char = "\N{U+2588}";}
       last SWITCH;};
   }
   if (($convert) and (($byte eq "00") or ($char eq "£"))) {
