@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "0.8";
+my $Version = "0.9";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -114,6 +114,27 @@ my $Version = "0.8";
 #   not the same as what people might want from TTML. Change box drawing characters from
 #   Unicode 2300 series to Unicode 2500 series per SMPTE-TT. Change a few other
 #   characters to Unicode per SMPTE-TT.
+# 0.9 Change internal mode tracking variable from "Text" to "TX" to make it easier to
+#   make an SMPTE-TT compliant metadata header when decoding Text mode captions. Not that
+#   Text mode caption decoding is a thing I've tested yet, but I like to dream. Add
+#   initial support for Spruce Technologies Languge (STL) subtitles, as they support
+#   positioning and styling. A bit ancient but used by some notable software,
+#   particularly on Apple systems. Add near-overlap detection to formats that have to
+#   manually clear the screen of subtitles (QT.TXT, SAMI, TTXT) and suppress writing
+#   clear commands (blank subtitles) if the next subtitle would appear within a half
+#   second of the last sub being cleared. Later I'll add a command line option to
+#   force clear commands to be written regardless of near-overlap (TO DO). Add
+#   "null-stuffing" (blank sub on the first frame) to those same formats to ensure
+#   they are detected as streams when muxed into certain media containers. Change
+#   SAMI subtitle generation to output something that is at least compatible with
+#   FFMPEG's HTML-to-ASS default conversion method. Positioning is now handled via a
+#   SPAN tag placed around each subtitle, but I have yet to find a single player that
+#   supports this (or any positioning method). Further refinements could be made to
+#   SAMI output to support features like background color, but until I find a player
+#   that can process more than just the basics I have nothing to test against. If you
+#   know of one, please let me know. Add background color support to QuickTime Caption
+#   output, since apparently later versions of QuickTime Pro supported inline changes
+#   to background color.
 sub usage;
 sub frame;
 sub timecodeof;
@@ -158,6 +179,9 @@ my $ResY = 480; # Vertical playback resolution
 # Y|y - Thanks to Emulgator for figuring out and sharing these ratios
 my $Xratio = 2/3; # (480/720 lines) Horizontal portion of the screen which is usable by captions (i.e. minus overscan)
 my $Yratio = 13/16; # (390/480 lines) Vertical portion of the screen which is usable by captions (i.e. minus overscan)
+
+my $lastvar1 = 0; # Generic "value from last subtitle" storage variable
+my $lastvar2 = 0; # Generic "value from last subtitle" storage variable
 
 # process command line arguments
 while ($_ = shift) {
@@ -242,22 +266,22 @@ if ($convertModeChannel eq "CC4") {
 }
 if ($convertModeChannel eq "T1") {
   $convertChannel = 1;
-  $convertMode = "Text";
+  $convertMode = "TX";
   $ok = 1;
 }
 if ($convertModeChannel eq "T2") {
   $convertChannel = 2;
-  $convertMode = "Text";
+  $convertMode = "TX";
   $ok = 1;
 }
 if ($convertModeChannel eq "T3") {
   $convertChannel = 3;
-  $convertMode = "Text";
+  $convertMode = "TX";
   $ok = 1;
 }
 if ($convertModeChannel eq "T4") {
   $convertChannel = 4;
-  $convertMode = "Text";
+  $convertMode = "TX";
   $ok = 1;
 }
 if ($ok == 0) {
@@ -306,7 +330,8 @@ if ($output eq "~") {
        elsif ($suffix =~ m/ttml|dfxp/i) { $convertFormat = "Timed Text Markup Language"; } # $writeTemp = 1;
        elsif ($suffix =~ m/xml/i){ $convertFormat = "SMPTE-TT"; }
        elsif ($suffix =~ m/ttxt/i) { $convertFormat = "GPAC Timed Text"; }
-       elsif ($output =~ m/(.*)(\.qt\.txt)$/i) { $convertFormat = "Quicktime Caption"; $suffix = ".qt.txt"; }
+       elsif ($suffix =~ m/stl/i) { $convertFormat = "Spruce Technologies Language"; }
+       elsif ($output =~ m/(.*)(\.qt\.txt)$/i) { $convertFormat = "QuickTime Caption"; $suffix = ".qt.txt"; }
        $convert = 1;
      }
    }
@@ -827,9 +852,9 @@ sub usage {
   print "         NTSC timebase: d (dropframe) or n (non-dropframe) (DEFAULT: n)\n";
   print "  NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is\n";
   print "    controlled by outfile suffix: .vtt WebVTT, .smi/.sami SAMI, .ssa SubStation Alpha,\n";
-  print "    .ttml/.dfxp Timed Text Markup Language, .xml SMPTE-TT, .qt.txt Quicktime Caption,\n";
-  print "    .ttxt GPAC Timed Text, .ass Advanced SubStation (default), or\n";
-  print "    .ccd SCC Disassembly (SCC input only).\n\n";
+  print "    .ttml/.dfxp Timed Text Markup Language, .xml SMPTE-TT, .qt.txt QuickTime Caption,\n";
+  print "    .ttxt GPAC Timed Text, .stl Spruce Technologies Language,\n";
+  print "    .ass Advanced SubStation (default), or .ccd SCC Disassembly (SCC input only).\n\n";
 }
 
 sub frame {
@@ -1035,6 +1060,7 @@ sub convertToSub {
     #  tags on the final line of the subtitle
     if ($_row > $starty){
       # TTML has to be output per-line, so we need to close the span tags if there are any open (and reset values)
+      # TO DO: make this a sub-function
       if(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($italicized) or ($underlined))){
         $subtitle = $subtitle."</span>";
         $color = "0";
@@ -1387,9 +1413,9 @@ sub outputHeader {
   elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT"){
     print WH "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
     if($convertFormat eq "SMPTE-TT"){
-      print WH "<tt xmlns=\"http://www.w3.org/2006/10/ttaf1\" xmlns:tts=\"http://www.w3.org/2006/10/ttaf1#styling\" xmlns:ttm=\"http://www.w3.org/2006/10/ttaf1#metadata\" xmlns:smpte=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt\" xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"\n";
+      print WH "<tt xmlns=\"http://www.w3.org/2006/10/ttaf1\" xmlns:tts=\"http://www.w3.org/2006/10/ttaf1#styling\" xmlns:ttm=\"http://www.w3.org/2006/10/ttaf1#metadata\"\n   xmlns:smpte=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt\" xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"\n";
     } else {
-      print WH "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttp=\"http://www.w3.org/ns/ttml#parameter\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\" xmlns:xml=\"http://www.w3.org/XML/1998/namespace\" ttp:timeBase=\"media\"\n";
+      print WH "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttp=\"http://www.w3.org/ns/ttml#parameter\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\"\n  xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\" xmlns:xml=\"http://www.w3.org/XML/1998/namespace\" ttp:timeBase=\"media\"\n";
     }
     # By default TTML divides the video into 32 horizontal cells and 15 vertical cells, just like captions. Unfortunately it doesn't
     #  account for overscan, so add some extra padding to mimic how captions are rendered on analog devices (and how they were designed)
@@ -1399,11 +1425,18 @@ sub outputHeader {
     print WH "            <ttm:desc>Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)</ttm:desc>\n";
     # TO DO: add XDS data to header
     if($convertFormat eq "SMPTE-TT"){
-      print WH "            <smpte:information xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\" origin=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"";
+      print WH "            <smpte:information xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\" origin=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"\n";
       if ($channel < 0){$channel = 1;} # Default to 1 if we don't have a channel specified
-      print WH " mode=\"Preserved\" m608:channel=\"CC".$channel."\" m608:captionService=\"F1C".$channel."CC\"/>\n";
+      # Calculate the channel header values that SMPTE-TT uses. Channel 1 = 1,1, Channel 2 = 1,2, Channel 3 = 2,1, Channel 4 = 2,2
+      my $chanp1 = $channel;
+      my $chanp2 = 1;
+      if ($chanp1 > 2){
+        $chanp1 -= 2;
+        $chanp2 = 2;
+      }
+      print WH "             mode=\"Preserved\" m608:channel=\"CC".$channel."\" m608:captionService=\"F".$chanp2."C".$chanp1.$convertMode."\"/>\n";
       print WH "        </metadata>\n        <styling>\n";
-      print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"monospace\" tts:fontSize=\"2c\"/>\n";
+      print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"monospace\" tts:fontSize=\"2c\"/>\n"; # SMPTE-TT does not use custom fonts for compatibility reasons
     } else {
       print WH "        </metadata>\n        <styling>\n";
       print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"Courier New\" tts:fontSize=\"2c\" tts:fontWeight=\"bold\"/>\n";
@@ -1423,27 +1456,47 @@ sub outputHeader {
     print WH "<TextSampleDescription horizontalJustification=\"left\" verticalJustification=\"top\" fillTextRegion=\"no\">\n";
     print WH "<FontTable>\n<FontTableEntry fontName=\"Courier New\" fontID=\"0\"/>\n</FontTable>\n<TextBox top=\"0\" left=\"0\" bottom=\"".$ResX."\" right=\"".$ResY."\"/>\n";
     print WH "<Style styles=\"Bold\" fontSize=\"30\" color=\"ff ff ff ff\"/>\n</TextSampleDescription>\n</TextStreamHeader>\n";
+    print WH "<TextSample sampleTime=\"00:00:00.000\" text=\"''\"/>\n\n"; # Blank line at the start so the stream can be detected immediately
+    $lastvar1 = "00:00:00:00"; # For tracking last subtitle endtime
   }
+  # Once again I am standing on the shoulders of McPoodle's research to reach my goals
+  # https://web.archive.org/web/20140705065128/http://geocities.com/McPoodle43/DVDMaestro/stl_format.html
+  elsif ($convertFormat eq "Spruce Technologies Language"){
+    $input =~ m/.*\.(.*)$/;
+    print WH "//Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n";
+    print WH "\$FontName \t= Courier New\n\$FontSize \t= 30\n\$HorzAlign \t= Center\n\$VertAlign \t= Top\n";
+    # Colors (default) are 0: black, 1: offblack, 2: white, 3: red, 4: gray, 5: silver, 6: aqua/cyan, 7: fuschia/magenta, 8: yellow, 9: navy, 10: green, 11: maroon, 12: teal, 13: purple, 14: olive, 15: white
+    print WH "\$ColorIndex1\t= 0\n\$ColorIndex2\t= 3\n\$ColorIndex3\t= 2\n\$ColorIndex4\t= 0\n"; # C1 = outline, C2 = outer outline, C3 = text, C4 = background
+    print WH "\$Contrast1 \t= 15\n\$Contrast2 \t= 0\n\$Contrast3 \t= 15\n\$Contrast4 \t= 0\n"; # 0 = transparent, 15 = opaque
+    print WH "\$ForceDisplay\t= FALSE\n\$TapeOffset \t= FALSE\n\n";
+    $lastvar1 = 0; # last Xoffset
+    $lastvar2 = 0; # last Yoffset
+  }
+  # SAMI support is theoretically compliant but limited because I have nothing to test against that fully processes the format.
   elsif ($convertFormat eq "SAMI") {
     print WH "<SAMI>\n";
     print WH "<HEAD>\n";
     print WH "<SAMIParam><!--\n  Metrics {time:ms;}\n  Spec {MSFT:1.0;} -->\n</SAMIParam>\n";
     print WH "<STYLE TYPE=\"text/css\">\n";
     print WH "<!--\n";
-    print WH "P {text-align: center; font-size: 30pt; font-family: Courier New; font-weight: bold; color: #f0f0f0;}\n";
+    print WH "P {text-align: center; font-size: 30pt; font-family: Courier New; font-weight: bold; color: #ffffff;}\n";
     print WH ".".uc($LangCode)."CC {Name:".$Language."; lang:".$LangCode."; SAMIType:CC;}\n";
     print WH "-->\n";
     print WH "</STYLE>\n";
     print WH "</HEAD>\n\n";
     print WH "<BODY>\n";
+    print WH "<SYNC start=\"0\"><P CLASS=\"".uc($Language)."\">&nbsp;</P></SYNC>\n"; # Blank line at the start so the stream can be detected immediately
+    $lastvar1 = "00:00:00:00"; # For tracking last subtitle endtime
   }
   # https://web.archive.org/web/20031103011212/http://developer.apple.com/documentation/QuickTime/REF/refDataExchange.6.htm
   # https://web.archive.org/web/20130502224223/http://webaim.org/techniques/captions/quicktime/caption_file
+  # https://web.archive.org/web/20100103095852/http://www.apple.com/quicktime/tutorials/textdescriptors.html
   #  In case anyone is wondering where I pulled this arcane knowledge from
-  if ($convertFormat eq "Quicktime Caption") {
+  if ($convertFormat eq "QuickTime Caption") {
     print WH "{QTtext}{font:Courier New}{justify:center}{size:30}{backColor:0,0,0}{keyedText:on}{dropShadow:on}\n"; # keyedText removes the background on the text box
     print WH "{textColor:65535,65535,65535}{textEncoding:256}{timescale:1000}{width:0}{height:0}\n"; # textEncoding:256 enables unicode
     print WH "[00:00:00.000] \n"; # Blank line at the start so the stream can be detected immediately
+    $lastvar1 = "00:00:00:00"; # For tracking last subtitle endtime
   }
   elsif ($convertFormat eq "SubStation Alpha") {
     print WH "[Script Info]\n";
@@ -1542,16 +1595,17 @@ sub outputSubtitle {
       $subtitle = $subtitle."\n"; # Append a newline to ensure the below parsing gets the full subtitle
       my $yoffset = 0;
       my $regionnum = 1;
+      # Parse the subtitle out into individual lines
       while($subtitle =~ /(.*\n)/g){
       	my $subsub = $1; # It's fun to say
       	my $xoffset = 0;
       	if(!($subsub =~ m/^\s*$/)){ # skip completely blank lines
           $subsub =~ s/\n|(\xa0+)$//g; # strip any newlines or trailing NBSPs
           # Check for leading NBSPs. If found, trim and offset the start of the line accordingly
-	  if($subsub =~ m/^(\xa0+)/){
-	    $xoffset = length($1);
-	    $subsub =~ s/^(\xa0+)//;
-	  }
+          if($subsub =~ m/^(\xa0+)/){
+            $xoffset = length($1);
+            $subsub =~ s/^(\xa0+)//;
+          }
       	  print WH "            <p region=\"pop".$regionnum++."\" tts:origin=\"".(($startx+$xoffset+8)*2)."c ".((($starty+$yoffset)*2) + 3)."c\" begin=\"".$tc1."\" end=\"".$tc2."\">".$subsub."</p>\n"; # xml:id=\"sub".sprintf("%05d", $subtitleNumber)."\"
       	}
       	$yoffset++;
@@ -1562,19 +1616,29 @@ sub outputSubtitle {
       }
     }
     elsif ($convertFormat eq "GPAC Timed Text"){
+      # First, check if the start time is within half a second of the last subtitle's endTime.
+      #  If so, we don't need to write the last sub's endTime.
+      if($lastvar1 ne "00:00:00:00" and frame($startTime) - frame($lastvar1) > $fps/2){
+        ($hh, $mm, $ss, $ff) = split("[:;]", $lastvar1);
+        $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+        print WH "<TextSample sampleTime=\"".sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms)."\" text=\"''\"/>\n";
+      }
       # timecode manipulation
       ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
       $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
       $tc1 = sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms);
-      ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
-      $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
-      $tc2 = sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms);
       # subtitle manipulation
       if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c3&H.{6}&}/gi){
         print "Warning: subtitle $subtitleNumber contains background color and/or alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
       }
       $subtitle =~ s|{\\c3&H.{6}&}||g; # Strip background color
       $subtitle =~ s|{\\a3&H.{2}&}||g; # Strip background alpha
+      # Warn about color/style not being converted yet (TO DO)
+      if ($subtitle =~ m/{\\c&H.{6}&}|{\\[iu][01]}/gi){
+        print "Warning: subtitle $subtitleNumber contains color and/or styling changes, which are supported by $convertFormat but not converted by this version of yyC2Swp. These elements will not be present in the converted subtitles. Convert to another format if you wish to preserve these features.\n";
+      }
+      $subtitle =~ s|{\\c&H.{6}&}||g; # Strip color for now (TO DO)
+      $subtitle =~ s|{\\[iu][01]}||g; # Strip italic/underline for now (TO DO)
       # Encode special characters (per XML spec)
       $subtitle =~ s|\"|&quot;|g; # Quotes
       $subtitle =~ s|'|&apos;|g; # Apostrophes
@@ -1599,17 +1663,56 @@ sub outputSubtitle {
       }
       print WH "<TextSample sampleTime=\"".$tc1."\" text=\"'".$subtitle."'\">\n";
       print WH "<TextBox top=\"".int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5)."\" left=\"".$Lmargin."\" bottom=\"".$ResY."\" right=\"".$Rmargin."\"/></TextSample>\n";
-      print WH "<TextSample sampleTime=\"".$tc2."\" text=\"''\"/>\n";
+      $lastvar1 = $endTime;
+    }
+    elsif ($convertFormat eq "Spruce Technologies Language"){
+      # timecode manipulation
+      # STL specifically uses frames, so we basically just unstring and immediately restring this
+      ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
+      $tc1 = sprintf("%02d:%02d:%02d:%02d", $hh, $mm, $ss, $ff);
+      ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
+      $tc2 = sprintf("%02d:%02d:%02d:%02d", $hh, $mm, $ss, $ff);
+      # subtitle manipulation
+      # Color, background color, and background alpha changes cannot be done for part of the subtitle (other than some unwieldy shenanigans with karaoke mode)
+      if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c.?&H.{6}&}/gi){
+        print "Warning: subtitle $subtitleNumber contains color, background color and/or background alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
+      }
+      $subtitle =~ s|{\\c.?&H.{6}&}||g; # Strip (background) color
+      $subtitle =~ s|{\\a3&H.{2}&}||g; # Strip background alpha
+      $subtitle =~ s/\|/\N{U+2503}/g; # replace bar with Unicode heavy vertical bar, due to bar being a line break
+      $subtitle =~ s|\^|\N{U+2038}|g; # replace freestanding carat with carat, due to italic/underline control character combination
+      $subtitle =~ s/\n/|/g; # Replace newlines with bar
+      $subtitle =~ s|{\\i[01]}|^I|g; # Replace italic close/open
+      $subtitle =~ s|{\\u[01]}|^U|g; # Replace underline close/open
+
+      # Override X and/or Y offset if it has changed since the last subtitle
+      if($lastvar1 ne int((($startx+$endx)/64*(720*$Xratio))+(720*(1-$Xratio)/2)+0.5)){
+        # STL assumes a horizontal resolution of 720
+        $lastvar1 = int((($startx+$endx)/64*(720*$Xratio))+(720*(1-$Xratio)/2)+0.5);
+        print WH "\$Xoffset = ".$lastvar1."\n";
+      }
+      if($lastvar2 ne int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5)){
+        $lastvar2 = int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5);
+        # Vertical can be 480 or 576, which we can override (TO DO)
+        print WH "\$Yoffset = ".$lastvar2."\n";
+      }
+
+      print WH $tc1."\t,\t".$tc2."\t,\t".$subtitle."\n";
     }
     # SAMI support works in theory, but there's not a single modern player that actually
-    #  honors the positioning information (or the font information, color, size....)
+    #  honors the positioning information (or anything in the header)
     #  I'll still leave this enabled in case that changes.
     elsif ($convertFormat eq "SAMI") {
+      # First, check if the start time is within half a second of the last subtitle's endTime.
+      #  If so, we don't need to write the last sub's endTime.
+      if($lastvar1 ne "00:00:00:00" and frame($startTime) - frame($lastvar1) > $fps/2){
+        print WH "<SYNC start=\"".sprintf("%d", (frame($lastvar1) / $fps * 1000) + 0.5)."\"><P CLASS=\"".uc($Language)."\">&nbsp;</P></SYNC>\n\n";
+      } else {
+        print WH "\n";
+      }
       # timecode manipulation
       $ff = frame($startTime);
       $tc1 = sprintf("%d", ($ff / $fps * 1000) + 0.5);
-      $ff = frame($endTime);
-      $tc2 = sprintf("%d", ($ff / $fps * 1000) + 0.5);
       # subtitle manipulation
       if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c3&H.{6}&}/gi){
         print "Warning: subtitle $subtitleNumber contains background color and/or alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
@@ -1620,23 +1723,35 @@ sub outputSubtitle {
       $subtitle =~ s|{\\u1}|<u>|g; # replace underline
       $subtitle =~ s|{\\i0}|</i>|g; # replace close italics
       $subtitle =~ s|{\\u0}|</u>|g; # replace close underline
+      $subtitle =~ s|{\\c&HFFFFFF&}|</FONT>|gi; # Convert white color tags to close font tag
+      my $colortag = "";
+      # Search for any other color tags and convert them to HTML syntax
+      while ($subtitle =~ m/{\\c&H(.{2})(.{2})(.{2})&}/) {
+        $colortag = "<FONT COLOR=\"#$3$2$1\">";
+        $subtitle =~ s/{\\c&H$1$2$3&}/$colortag/g;
+      }
       #$subtitle =~ s/\xa0/&nbsp;/g;
       $subtitle =~ s|\n|<br>|g; # convert newlines to <br>
       # output subtitle
-      print WH "<SYNC start=\"".$tc1."\"><P CLASS=\"".uc($Language)."\"><CaptionBlock PosX=".int(((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2))*3/4+0.5)."pt PosY=".int(((($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt>"; # STYLE=\"margin-left: ".$Lmargin."pt; margin-right: ".$Rmargin."pt; margin-top: ".int(((($starty/16*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt;\"
-      print WH "<TT>".$subtitle."</TT></CaptionBlock></P></SYNC>\n";
-      print WH "<SYNC start=\"".$tc2."\"><P CLASS=\"".uc($Language)."\">&nbsp;</P></SYNC>\n\n";
+      print WH "<SYNC start=\"".$tc1."\"><P CLASS=\"".uc($Language)."\" STYLE=\"left: ".int(((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2))*3/4+0.5)."pt; top: ".int(((($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt; position: absolute;\">"; # STYLE=\"margin-left: ".$Lmargin."pt; margin-right: ".$Rmargin."pt; margin-top: ".int(((($starty/16*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt;\"
+      print WH $subtitle."</P></SYNC>\n";
+      $lastvar1 = $endTime;
     }
     # Format added in the lost CCASDI 3.8. QTtext supports text box sizing and positioning
     #  along with shirking text to fit the box size, all of which is perfect for captions
-    if ($convertFormat eq "Quicktime Caption") {
+    if ($convertFormat eq "QuickTime Caption") {
+      # First, check if the start time is within half a second of the last subtitle's endTime.
+      #  If so, we don't need to write the last sub's endTime.
+      if($lastvar1 ne "00:00:00:00" and frame($startTime) - frame($lastvar1) > $fps/2){
+        ($hh, $mm, $ss, $ff) = split("[:;]", $lastvar1);
+        $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+        print WH sprintf("[%02s:%02s:%02s.%03d]", $hh, $mm, $ss, $ms)."\n";
+      }
+
       # timecode manipulation
       ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
       $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
       $tc1 = sprintf("[%02s:%02s:%02s.%03d] ", $hh, $mm, $ss, $ms);
-      ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
-      $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
-      $tc2 = sprintf("[%02s:%02s:%02s.%03d]", $hh, $mm, $ss, $ms);
       # subtitle manipulation
       $subtitle =~ s/\n/\x0d/g; # convert newlines (LF\CRLF) to Mac newlines (CR)
       my $red = 0;
@@ -1654,11 +1769,21 @@ sub outputSubtitle {
         $colortag = sprintf("{textColor:%d,%d,%d}", $red, $green, $blue);
         $subtitle =~ s/{\\c&H$1$2$3&}/$colortag/g;
       }
-      # Warn about background alpha and color features not being supported.
-      if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c3&H.{6}&}/gi){
-        print "Warning: subtitle $subtitleNumber contains background color and/or alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
+      # Later versions of QuickTime Pro allow you to change background color inline, so do that too
+      while ($subtitle =~ m/{\\c3&H(.{2})(.{2})(.{2})&}/) {
+        $red = hex($3) * 256;
+        $green = hex($2) * 256;
+        $blue = hex($1) * 256;
+        if (uc($3) eq "FF") { $red = 65535; }
+        if (uc($2) eq "FF") { $green = 65535; }
+        if (uc($1) eq "FF") { $blue = 65535; }
+        $colortag = sprintf("{backColor:%d,%d,%d}", $red, $green, $blue);
+        $subtitle =~ s/{\\c3&H$1$2$3&}/$colortag/g;
       }
-      $subtitle =~ s|{\\c3&H.{6}&}||g; # Strip background color. We can only do all-or-nothing with QT: either the whole subtitle or none of it
+      # Warn about background alpha not being supported.
+      if ($subtitle =~ m/{\\a3&H.{2}&}/gi){
+        print "Warning: subtitle $subtitleNumber contains background alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
+      }
       $subtitle =~ s|{\\a3&H.{2}&}||g; # Strip background alpha
       $subtitle =~ s/{\\i1}/{italic}/g; # Convert italic
       $subtitle =~ s/{\\u1}/{underline}/g; # Convert underline
@@ -1670,7 +1795,8 @@ sub outputSubtitle {
       my $Vlen = int(($endy-$starty)/15*($ResY*$Yratio));
       # output subtitle. shrinkTextBox needs to be on for textBox to do anything
       print WH $tc1."{shrinkTextBox:on}{textBox:".$Hpos.", ".$Vpos.", ".$Hlen.", ".$Vlen."}".$subtitle."\n";
-      print WH $tc2."\n"; # 2nd line clears screen
+      # Store the end time so we can check if we need to clear it before the next subtitle would for us
+      $lastvar1 = $endTime;
     }
     elsif ($convertFormat eq "SubStation Alpha") {
       # timecode manipulation
@@ -1755,13 +1881,26 @@ sub outputFooter {
     unlink($tempfile) or print "Warning: could not delete temp file $tempfile: $!";
   }
   if ($convertFormat eq "SAMI") {
+    # close out the last subtitle
+    print WH "<SYNC start=\"".sprintf("%d", (frame($lastvar1) / $fps * 1000) + 0.5)."\"><P CLASS=\"".uc($Language)."\">&nbsp;</P></SYNC>\n\n";
     print WH "</BODY>\n</SAMI>\n";
   }
   elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") {
     print WH "        </div>\n    </body>\n</tt>";
   }
   elsif ($convertFormat eq "GPAC Timed Text"){
+    # close out the last subtitle
+    (my $hh, my $mm, my $ss, my $ff) = split("[:;]", $lastvar1);
+    my $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+    print WH "<TextSample sampleTime=\"".sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms)."\" text=\"''\"/>\n";
+    # Now close out the subtitle stream
     print WH "</TextStream>";
+  }
+  elsif ($convertFormat eq "QuickTime Caption"){
+    # Not really a footer as much as closing out the last subtitle
+    (my $hh, my $mm, my $ss, my $ff) = split("[:;]", $lastvar1);
+    my $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+    print WH sprintf("[%02s:%02s:%02s.%03d]", $hh, $mm, $ss, $ms)."\n";
   }
 }
 
@@ -2439,13 +2578,13 @@ sub disCommand {
                       $ccMode = "paint-on";
                       $startTime = timecodeof($frames + $offset + $numwords);
                       last SWITCH;}; # {RDC}
-          /2a/ && do {if ((!$convert) or ($convertMode eq "Text")) {
-                        $mode = "Text"; $ccMode = "";
+          /2a/ && do {if ((!$convert) or ($convertMode eq "TX")) {
+                        $mode = "TX"; $ccMode = "";
                         $startTime = timecodeof($frames + $offset + $numwords);
                         $endTime = ""; $subtitle = "";
                       }; last SWITCH;}; # {TR}
-          /2b/ && do {if ((!$convert) or ($convertMode eq "Text")) {
-                        $mode = "Text"; $ccMode = "";
+          /2b/ && do {if ((!$convert) or ($convertMode eq "TX")) {
+                        $mode = "TX"; $ccMode = "";
                       }; last SWITCH;}; # {RTD}
           /2c/ && do {if ($ccMode eq "pop-on") {
                         if ($endTime eq "") {
@@ -2465,7 +2604,7 @@ sub disCommand {
                           clearScreen();
                         }
                       }; last SWITCH;}; # {EDM}
-          /2d/ && do {if (($ccMode eq "roll-up") or ($mode eq "Text") or ($mode eq "ITV")) {
+          /2d/ && do {if (($ccMode eq "roll-up") or ($mode eq "TX") or ($mode eq "ITV")) {
                         $endTime = timecodeof($frames + $offset + $numwords);
                         $subtitle = convertToSub();
                         if ($subtitle ne "") {
@@ -2651,13 +2790,13 @@ sub disCommand {
                       }
                       $ccMode = "paint-on";
                       last SWITCH;}; # {RDC}
-          /2a/ && do {if ((!$convert) or ($convertMode eq "Text")) {
-                        $mode = "Text"; $ccMode = "";
+          /2a/ && do {if ((!$convert) or ($convertMode eq "TX")) {
+                        $mode = "TX"; $ccMode = "";
                         $startTime = timecodeof($frames + $offset + $numwords);
                         $endTime = ""; $subtitle = "";
                       }; last SWITCH;}; # {TR}
-          /2b/ && do {if ((!$convert) or ($convertMode eq "Text")) {
-                        $mode = "Text"; $ccMode = "";
+          /2b/ && do {if ((!$convert) or ($convertMode eq "TX")) {
+                        $mode = "TX"; $ccMode = "";
                       }; last SWITCH;}; # {RTD}
           /2c/ && do {if ($ccMode eq "pop-on") {
                         if ($endTime eq "") {
@@ -3480,8 +3619,8 @@ sub disCommand {
         /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
         /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
-        /2a/ && do {$commandtoken = "{TR}"; $mode = "Text"; last SWITCH;};
-        /2b/ && do {$commandtoken = "{RTD}"; $mode = "Text"; last SWITCH;};
+        /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
+        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
         /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
@@ -3564,8 +3703,8 @@ sub disCommand {
         /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
         /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
-        /2a/ && do {$commandtoken = "{TR}"; $mode = "Text"; last SWITCH;};
-        /2b/ && do {$commandtoken = "{RTD}"; $mode = "Text"; last SWITCH;};
+        /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
+        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
         /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
@@ -4232,8 +4371,8 @@ sub disCommand {
         /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
         /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
-        /2a/ && do {$commandtoken = "{TR}"; $mode = "Text"; last SWITCH;};
-        /2b/ && do {$commandtoken = "{RTD}"; $mode = "Text"; last SWITCH;};
+        /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
+        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
         /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
@@ -6336,7 +6475,7 @@ sub asCommand {
       last SWITCH;
     };
     /^TR$/ && do {
-      $mode = "Text";
+      $mode = "TX";
       if ($channel == 1) { $word = "942a"; }
       if ($channel == 2) { $word = "1c2a"; $mode = "ITV"; }
       if ($channel == 3) { $word = "152a"; }
@@ -6344,7 +6483,7 @@ sub asCommand {
       last SWITCH;
     };
     /^RTD$/ && do {
-      $mode = "Text";
+      $mode = "TX";
       if ($channel == 1) { $word = "94ab"; }
       if ($channel == 2) { $word = "1cab"; $mode = "ITV"; }
       if ($channel == 3) { $word = "15ab"; }
