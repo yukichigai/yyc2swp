@@ -38,7 +38,7 @@ Captions are converted assuming a non-anamorphic 4:3 NTSC display resolution (64
 
 Captions which contain styling options (e.g. color changes, background alpha) that are unsupported by the output format will be converted with those styles removed. A warning will be printed to the console for each caption that could not be converted with all styling intact.
 
-# Known Issues
+## Known Issues
 Conversion from SCC format currently has an issue with certain combinations of special characters near the ends of caption lines which causes the last 1-2 characters to be omitted. This script will remain in pre-1.0 versioning until it is fixed.
 
 Depending on the source media, certain SCC extraction tools (or versions of those tools) produce differences in formatting which this script is not (yet) capable of accounting for. These same tools usually support extraction to Grid 608 (G608) format and produce consistent results when outputting to that format. Grid 608 is also much easier to visually spot-check. If you are encountering undesired results when converting extracted SCC files you may want to extract to Grid 608 and convert from that instead. (Note that Grid 608 does not preserve background color, background alpha, or flashing text style effects)
