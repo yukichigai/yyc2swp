@@ -36,9 +36,12 @@ NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is contro
 # Notes
 Captions are converted assuming a non-anamorphic 4:3 NTSC display resolution (640x480 in square pixels) and padded for overscan. I intend to add options for overriding the target resolution, aspect ratio, and overscan at a later date.
 
-Certain SCC extraction tools (or versions of those tools) produce formatting inconsistencies (depending on the source media) which this script is not (yet) capable of accounting for. These same tools (or versions) usually support extraction to Grid 608 (G608) format and do not produce the same inconsistencies when outputting to that format. Grid 608 is also much easier to visually spot-check. If you are encountering undesired results when converting extracted SCC files you may want to extract to Grid 608 and convert from that instead. (Note that Grid 608 does not preserve background color, background alpha, or flashing text style effects)
-
 Captions which contain styling options (e.g. color changes, background alpha) that are unsupported by the output format will be converted with those styles removed. A warning will be printed to the console for each caption that could not be converted with all styling intact.
+
+# Known Issues
+Conversion from SCC format currently has an issue with certain combinations of special characters near the ends of caption lines which causes the last 1-2 characters to be omitted. This script will remain in pre-1.0 versioning until it is fixed.
+
+Depending on the source media, certain SCC extraction tools (or versions of those tools) produce differences in formatting which this script is not (yet) capable of accounting for. These same tools usually support extraction to Grid 608 (G608) format and produce consistent results when outputting to that format. Grid 608 is also much easier to visually spot-check. If you are encountering undesired results when converting extracted SCC files you may want to extract to Grid 608 and convert from that instead. (Note that Grid 608 does not preserve background color, background alpha, or flashing text style effects)
 
 ## Current conversion options
 Advanced SubStation (ASS) produces the most consistent output for commonly used players and decoding libraries (VLC, MPC, MPV, Jellyfin, FFMPEG). It supports all CEA-608 features other than flashing text, and scales properly regardless of differences in resolution and/or aspect ratio between subtitle specifications and the actual media it is used with. Overall it is the most compatible yet accurate format for non-commercial/non-professional use, thus why it is the default.
