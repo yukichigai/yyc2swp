@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "0.9";
+my $Version = "1.0";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -135,6 +135,24 @@ my $Version = "0.9";
 #   know of one, please let me know. Add background color support to QuickTime Caption
 #   output, since apparently later versions of QuickTime Pro supported inline changes
 #   to background color.
+# 1.0 Change script to use combined "styling" array instead of individual arrays for
+#   italic and underline. This will allow storage of the rarely-used flash styling
+#   which is mutually exclusive with italic/underline. It will also simplify importing
+#   (and exporting) g608. Add g608 output, as well as a new Extended Grid 608 (e608)
+#   output format. e608 is based on g608, but can have more rows and columns if
+#   needed (though why) and outputs background color and alpha flags, as well as the
+#   previously mentioned flashing text flag. Correct some byte decoding of uncommon
+#   SCC commands (including flashing text). Fix a bug in the convertToSub function
+#   that was not properly trimming trailing newlines. Add zIndex values to regions in
+#   TTML/SMPTE-TT output to prevent position offsets in not-quite-compliant players.
+#   Add LayoutResX/Y fields to header for (Advanced) SubStation per recommendation from
+#   libass documentation. Correct STL positioning to account for change in coordinate
+#   basis when horizontal justification is centered (i.e. I didn't realize that 0 is
+#   set to the middle of the screen). Fix a few minor Perl errors identified by syntax
+#   parser that I just got around to enabling in my editor (ah, eto... bleh). Add 
+#   command line options to override X and Y resolution settings used for calculations.
+#   Add command line option to override Language and Language Code variables. Add
+#   command line option to override display/"safe" display area for X and Y.
 sub usage;
 sub frame;
 sub timecodeof;
@@ -170,18 +188,21 @@ my $output = "~"; # place-holder for no output file yet
 my $anything = "~";
 
 # Y|y - new stuff
-my $writeTemp = 0; # Does this format need a temp file (usually due to the header
-#   needing to be added to as we do more conversion, e.g. TTML)
-my $Language = "English"; # Human-readable language to list
-my $LangCode = "en"; # Language code to use in file 
-my $ResX = 640; # Horizontal playback resolution
-my $ResY = 480; # Vertical playback resolution
+my $writeTemp = 0; # Does this format need a temp file (usually due to the header needing to be added to as we do more conversion)
+my $Language = ""; # Human-readable language to list
+my $LangCode = ""; # Language code to use in file
+my $ResX = 0; # Horizontal playback resolution
+my $ResY = 0; # Vertical playback resolution
 # Y|y - Thanks to Emulgator for figuring out and sharing these ratios
 my $Xratio = 2/3; # (480/720 lines) Horizontal portion of the screen which is usable by captions (i.e. minus overscan)
 my $Yratio = 13/16; # (390/480 lines) Vertical portion of the screen which is usable by captions (i.e. minus overscan)
 
 my $lastvar1 = 0; # Generic "value from last subtitle" storage variable
 my $lastvar2 = 0; # Generic "value from last subtitle" storage variable
+my $lastvar3 = 0; # Generic "value from last subtitle" storage variable
+
+my $e608Cols = 32; # Number of columns we output/input for e608 (configurable)
+my $e608Rows = 15; # Number of rows we output/input for e608 (configurable)
 
 # process command line arguments
 while ($_ = shift) {
@@ -223,6 +244,42 @@ while ($_ = shift) {
 #  }
   if (s/-c//) {
     $convertModeChannel = $_;
+    next;
+  }
+  if(s/-xr//){
+    if(m|([0-9]+)[:/]([0-9]+)|){
+      if(int($1) <= 0 or int($2) <= 0){
+        $Xratio = 1;
+      } else {
+        $Xratio = int($1)/int($2);
+      }
+    }
+    next;
+  }
+  if(s/-yr//){
+    if(m|([0-9]+)[:/]([0-9]+)|){
+      if(int($1) <= 0 or int($2) <= 0){
+        $Yratio = 1;
+      } else {
+        $Yratio = int($1)/int($2);
+      }
+    }
+    next;
+  }
+  if(s/-x//) {
+    $ResX = int($_);
+    next;
+  }
+  if(s/-y//) {
+    $ResY = int($_);
+    next;
+  }
+  if(s/-l//) {
+    if(length($_) > 2){
+      $Language = $_;
+    } else {
+      $LangCode = lc($_);
+    }
     next;
   }
   if ($input =~ m\~\) {
@@ -284,7 +341,7 @@ if ($convertModeChannel eq "T4") {
   $convertMode = "TX";
   $ok = 1;
 }
-if ($ok == 0) {
+if ($ok eq 0) {
   usage();
   die "Channel to convert must be CC1 - CC4 or T1 - T4, stopped";
 }
@@ -303,12 +360,14 @@ if ($output eq "~") {
   }
   elsif ($input =~ m/(.*)(\.ccd)$/i) {
     $output = $1.".scc";
-  }
-# Y|y - If we're loading Grid 608 format, convert to default subtitle format
-  elsif ($input =~ m/(.*)(\.g608)$/i) {
+  } elsif ($input =~ m/(.*)(\.g608)$/i) { # Y|y - If we're loading Grid 608 format, convert to default subtitle format
     $output = $1.$suffix;
     $convert = 1;
     $assemble = 2;
+  } elsif ($input =~ m/(.*)(\.e608)$/i) { # Y|y - Ditto for Extended Grid 608
+    $output = $1.$suffix;
+    $convert = 1;
+    $assemble = 3;
   }
 } else {
    $convertFormat = "~";
@@ -323,14 +382,16 @@ if ($output eq "~") {
        }
      }
      else {
-       if ($suffix =~ m/vtt/i) { $convertFormat = "WebVTT"; }
+       if ($suffix =~ m/vtt/i) { $convertFormat = "WebVTT"; $writeTemp = 1; } # Temp file needed because we may need to add style cues to the header for semi-transparent backgrounds
        elsif ($suffix =~ m/smi|sami/i) { $convertFormat = "SAMI"; }
        elsif ($suffix =~ m/ssa/i) { $convertFormat = "SubStation Alpha"; }
        elsif ($suffix =~ m/ass/i) { $convertFormat = "Advanced SubStation"; }
-       elsif ($suffix =~ m/ttml|dfxp/i) { $convertFormat = "Timed Text Markup Language"; } # $writeTemp = 1;
+       elsif ($suffix =~ m/ttml|dfxp/i) { $convertFormat = "Timed Text Markup Language"; }
        elsif ($suffix =~ m/xml/i){ $convertFormat = "SMPTE-TT"; }
        elsif ($suffix =~ m/ttxt/i) { $convertFormat = "GPAC Timed Text"; }
-       elsif ($suffix =~ m/stl/i) { $convertFormat = "Spruce Technologies Language"; }
+       elsif ($suffix =~ m/stl/i) { $convertFormat = "Spruce Technologies Language"; if ($ResX <= 0){$ResX = 720;} } # STL uses 720 for width by default
+       elsif ($suffix =~ m/g608/i) { $convertFormat = "Grid 608"; }
+       elsif ($suffix =~ m/e608/i) { $convertFormat = "Extended Grid 608"; }
        elsif ($output =~ m/(.*)(\.qt\.txt)$/i) { $convertFormat = "QuickTime Caption"; $suffix = ".qt.txt"; }
        $convert = 1;
      }
@@ -341,12 +402,22 @@ if ($output eq "~") {
    }
    if ($input =~ m/(.*)(\.g608)$/i) {
      $assemble = 2;
+   } elsif ($input =~ m/(.*)(\.e608)$/i) {
+     $assemble = 3;
    }
 }
 if ($output eq "~") {
   usage();
-  die "Input file must have .scc, .ccd, or .g608 extension, stopped";
+  die "Input file must have .scc, .ccd, .g608, or .e608 extension, stopped";
 }
+
+# Set default X/Y resolutions if none have been specified
+if ($ResX <= 0){$ResX = 640;}
+if ($ResY <= 0){$ResY = 480;}
+
+# Set default language if none has been specified
+if ($Language eq ""){$Language = "English";}
+if ($LangCode eq ""){$LangCode = lc(substr($Language,0,2));}
 
 if (($fps < 12)||($fps > 60)) {
   usage();
@@ -364,6 +435,7 @@ if ($input eq $output) {
 # Y|y - Some formats require adding to the header as we go, so we write the body to a temp file and append the contents once we're done
 if($writeTemp) {
   open (TH, '+>:encoding(UTF-8)', $output.".temp") or die "Unable to write to temp file: $!";
+  binmode(TH, ":encoding(UTF-8)"); # To attempt to be doubly sure
   print TH "\n"; # Sometimes writing the first line doesn't work, so write a blank line just to "prime" the temp file, so to speak
 }
 # Need to determine type of input file
@@ -390,7 +462,7 @@ my @words;
 my $hi;
 my $lo;
 my $skip;
-if ($assemble == 1) {
+if ($assemble eq 1) {
   $line = <RH>;
   chomp $line;
   (my $channelcommand, $channel) = split(/ /, $line);
@@ -402,7 +474,7 @@ if ($assemble == 1) {
   if (($channel < 1) or ($channel > 4)) {
     die "CHANNEL set incorrectly, stopped";
   }
-} elsif($assemble == 0) {
+} elsif($assemble eq 0) {
   $channel = 1; # can be 1 - 4
   do {
     $line = <RH>;
@@ -434,7 +506,7 @@ if ($assemble == 1) {
   $skip = <RH>;
   $skip = <RH>;
 }
-elsif ($assemble == 2){
+elsif ($assemble eq 2 or $assemble eq 3){
 # Y|y - Go back to the beginning of the file
   seek (RH, 0, 0);
 }
@@ -443,6 +515,7 @@ else {
 }
 
 open (WH, '>:encoding(UTF-8)', $output) or die "Unable to write to file: $!";
+binmode(WH, ":encoding(UTF-8)");
 # header
 if ($convert) {
   outputHeader($convertFormat);
@@ -460,7 +533,7 @@ my $startx = 39;
 my $starty = 16;
 my $endx = 0;
 my $endy = 1;
-# Y|y - Variable to track the positioning regions we have already made for TTML and SAMI
+# Y|y - Variable to track the regions/cues/etc we've added to the header (currently VTT only)
 my $regionList = "";
 # Initialize ALL THE THINGS
 clearScreen();
@@ -500,15 +573,14 @@ my $token;
 my @character;  # grid of characters for subtitle conversion: [row][col]
 my @color;      # grid of color codes for subtitle conversion: [row][col]
 my $color;      # color of current position
-my @underlined; # grid of underline flags for subtitle conversion: [row][col]
-my $underlined; # underline flag of current position
-my @italicized; # grid of italicize flags for subtitle conversion: [row][col]
-my $italicized; # italicize flag of current position
 my $lastcode;
 
 # Y|y - New stuff. Rarely used stuff, but stuff we can support all the same
 my @bgcolor; # grid of background color flags for subtitle conversion: [row][col]
 my $bgcolor; # background color flag of current position
+# Y|y - Combine Underline/Italic/Flash into one array
+my @styling;    # Grid of character styling (Italic, Underline, Flash)
+my $styling;	# Styling flag of the current character
 
 # read loop
 my $lastframe = -1;
@@ -520,8 +592,8 @@ my @xdslist = (); # used for parsing eXtended Data Service messages
 LINELOOP: while (<RH>) {
   #if ($_ eq "\n") {
   if ($_ =~ m/^\s+$/){
-    # Y|y - For g608 a blank newline indicates the end of a caption, so output what we have
-    if($assemble == 2 and $row > 1){
+    # Y|y - For g608/e608 a blank newline indicates the end of a caption, so output what we have
+    if($assemble > 1 and $row > 1){
       $subtitle = convertToSub();
       outputSubtitle($subtitleNumber++, $startTime, $endTime, $subtitle);
       clearScreen();
@@ -529,7 +601,7 @@ LINELOOP: while (<RH>) {
     }
     next LINELOOP;
   }
-  if ($assemble == 1) {
+  if ($assemble eq 1) {
     chomp;
     # Assemble line
     m/(\S+)(\s)(.+)/; # split into timecode and rest of line
@@ -608,7 +680,7 @@ LINELOOP: while (<RH>) {
       $frames = 0;
     }
     $timecode = timecodeof($frames);
-  } elsif ($assemble == 0) {
+  } elsif ($assemble eq 0) {
     chomp;
     # Disassemble line
     ($timecode, @words) = split(/\s/, $_);
@@ -711,8 +783,7 @@ LINELOOP: while (<RH>) {
         if ($token ne "") {
           $character[$row][$col] = $token;
           $color[$row][$col] = $color;
-          $underlined[$row][$col] = $underlined;
-          $italicized[$row][$col] = $italicized;
+          $styling[$row][$col] = $styling;
           $bgcolor[$row][$col] = $bgcolor;
           $col++;
         }
@@ -729,16 +800,14 @@ LINELOOP: while (<RH>) {
           if ($hiChar ne "") {
             $character[$row][$col] = $hiChar;
             $color[$row][$col] = $color;
-            $underlined[$row][$col] = $underlined;
-            $italicized[$row][$col] = $italicized;
+            $styling[$row][$col] = $styling;
             $bgcolor[$row][$col] = $bgcolor;
             $col++;
           }
           if ($loChar ne "") {
             $character[$row][$col] = $loChar;
             $color[$row][$col] = $color;
-            $underlined[$row][$col] = $underlined;
-            $italicized[$row][$col] = $italicized;
+            $styling[$row][$col] = $styling;
             $bgcolor[$row][$col] = $bgcolor;
             $col++;
           }
@@ -758,44 +827,77 @@ LINELOOP: while (<RH>) {
     $timecode = timecodeof($frames);
   }
   # Y|y - Grid 608 processing
-  else {
+  elsif ($assemble eq 2) {
     # Check if the whole line is an integer, i.e. the subtitle number, which we really don't need except for debugging
-    if ($_ =~ m/^[0-9]+\s$/){
-      $subtitleNumber = int($_)-1;
+    if ($_ =~ m/^([0-9]+)\s*$/){
+      $subtitleNumber = int($1)-1;
       next LINELOOP;
     }
     # Check for the starttime --> endtime line
-    elsif(length($_) >= 30 and index($_, " --> ") == 12){ # Line length and positioning are fixed for timecodes in g608
+    elsif($_ =~ m/^([0-9]{2}:[0-9]{2}:[0-9]{2}),([0-9]{3})\s-->\s([0-9]{2}:[0-9]{2}:[0-9]{2}),([0-9]{3})\s*$/){
       # Get the start time, but convert from g608 formatting (00:00:00,000) to internal 00:00:00:00. Convert miliseconds to framecount
-      $startTime = substr($_,0,8).":".(substr($_,9,3)*$fps)/1000;
-      $endTime = substr($_,17,8).":".(substr($_,26,3)*$fps)/1000;
+      $startTime = $1.":".($2*$fps)/1000;
+      $endTime = $3.":".($4*$fps)/1000;
     }
-    # Caption lines will be at least 98 characters long (with line break)
-    elsif(length($_) >= 98){
-      # check for invalid characters in the color and style definitions
-      if(!(substr($_,33,32) =~ m/^[0-9]+$/ and substr($_,65,32) =~ m/^[BIRU]+$/)){
-        die "Invalid characters found in g608 file in subtitle ($subtitleNumber+1) : $_";
-      }
+    # Caption lines will have 32 characters of text, 0-1 null char, then 32 characters of numbers and 32 characters of B, I, R, or U
+    elsif($_ =~ m/^(.{32})\x00?([0-9]{32})([BIRU]{32})\s*$/){
+      # per G608 spec there should be 3 sets of 32 characters, but some versions add a null character at position 32
       # don't process rows we can immediately consider blank: all 9s in the color definition, all whitespace in the character list
-      if(!(substr($_,33,32) =~ m/^9+$/ or substr($_,0,32) =~m/^\s+$/)){
+      if(!($_ =~ m/^\s{32}\x00?9{32}/)){
         for(my $_x = 0; $_x < 32; $_x++){
-          if(substr($_,$_x+33,1) != "9"){
+          if(substr($2,$_x,1) ne "9"){ # 9 means invisible means nothing to show, so... null
             # Copy the character
-            $character[$row][$_x] = substr($_,$_x,1);
-            # Copy formatting
-            if(substr($_,$_x+65,1) =~ m/[BI]/){
-              $italicized[$row][$_x] = 1;
-            }
-            if(substr($_,$_x+65,1) =~ m/[BU]/){
-              $underlined[$row][$_x] = 1;
-            }
+            $character[$row][$_x] = substr($1,$_x,1);
             # Copy color
-            $color[$row][$_x] = substr($_,$_x+33,1);
+            $color[$row][$_x] = substr($2,$_x,1);
+            # Copy formatting
+            $styling[$row][$_x] = substr($3,$_x,1);
           }
         }
       }
       $row++;
+    } # TO DO: imprecise parsing option for malformed rows
+    else{
+      print "Unidentified line type, length ".length($_)."\n";
+      print $_."\n";
     }
+  }
+  # Extended Grid 608 processing, which is like Grid 608 but... extended....
+  elsif ($assemble eq 3) {
+    # Check if the whole line is an integer, i.e. the subtitle number, which we really don't need except for debugging
+    if ($_ =~ m/^([0-9]+)\s*$/){
+      $subtitleNumber = int($1)-1;
+      next LINELOOP;
+    }
+    elsif($_ =~ m/^\xEF\xBB\xBF\s*$/){ # Unicode BOM, do nothing
+      next LINELOOP;
+    }
+    # Check for the starttime --> endtime line. Unlike g608 we may have stuff after (unsure, not yet implemented)
+    elsif($_ =~ m/^([0-9]{2}:[0-9]{2}:[0-9]{2}),([0-9]{3})\s-->\s([0-9]{2}:[0-9]{2}:[0-9]{2}),([0-9]{3})(.*)$/){
+      # Get the start time, but convert from g608 formatting (00:00:00,000) to internal 00:00:00:00. Convert miliseconds to framecount
+      $startTime = $1.":".($2*$fps)/1000;
+      $endTime = $3.":".($4*$fps)/1000;
+      # POSSIBLE TO DO: $5 contains all the post-timecode parameters (rollup/painton modes perhaps?)
+    }
+    # Caption lines will have 32-ish characters of text, 32-ish characters of numbers, 32-ish characters of B, F, I, R, or U, then 32-ish characters of background color/alpha
+    elsif($_ =~ m/^(.{$e608Cols})([0-9]{$e608Cols})([BFIRU]{$e608Cols})([TBbWwRrGgUuYyMmCc]{$e608Cols})\s*$/){
+      # don't process rows we can immediately consider blank: all 9s in the color definition, all whitespace in the character list
+      if(!($_ =~ m/^\s{$e608Cols}9{$e608Cols}/)){
+        for(my $_x = 0; $_x < $e608Cols; $_x++){
+          if(substr($2,$_x,1) ne "9"){ # 9 means invisible means nothing to show, so... null
+            # Copy the character
+            $character[$row][$_x] = substr($1,$_x,1);
+            # Copy color
+            $color[$row][$_x] = substr($2,$_x,1);
+            # Copy formatting
+            $styling[$row][$_x] = substr($3,$_x,1);
+            # Copy background
+            $bgcolor[$row][$_x] = substr($4,$_x,1);
+          }
+        }
+      }
+      $row++;
+    } # TO DO: imprecise parsing option for malformed rows
     else{
       print "Unidentified line type, length ".length($_)."\n";
       print $_."\n";
@@ -838,7 +940,8 @@ sub usage {
   print "  Converts Scenarist Closed Captions or Grid 608 files to subtitles while\n";
   print "    preserving positioning information. Also converts to SCC Dissasembly.\n";
   print "  Based on CCASDI by McPoodle.\n";
-  print "  Syntax: yyC2Swp [-cCC3] [-a] [-o01:00:00:00] [-td] infile.scc [outfile.ass]\n";
+  print "  Syntax: yyC2Swp [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576]\n";
+  print "                  [-xr4:5] [-yr4/5] [-lDeutsch] [-lDE] infile.scc [outfile.ass]\n";
   print "    -c (OPTIONAL; SCC only): Channel to convert to subtitle.\n";
   print "         (CC1 default, CC2, CC3, CC4, T1, T2, T3 and T4 are other choices)\n";
   print "    -r (OPTIONAL): Output roll-up subtitles in roll-up format, instead of\n";
@@ -850,11 +953,24 @@ sub usage {
   print "    -f (OPTIONAL): Number of frames per second (range 12 - 60) (DEFAULT: 29.97)\n";
   print "    -t (OPTIONAL; automatically sets fps to 29.97):\n";
   print "         NTSC timebase: d (dropframe) or n (non-dropframe) (DEFAULT: n)\n";
-  print "  NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is\n";
-  print "    controlled by outfile suffix: .vtt WebVTT, .smi/.sami SAMI, .ssa SubStation Alpha,\n";
-  print "    .ttml/.dfxp Timed Text Markup Language, .xml SMPTE-TT, .qt.txt QuickTime Caption,\n";
-  print "    .ttxt GPAC Timed Text, .stl Spruce Technologies Language,\n";
-  print "    .ass Advanced SubStation (default), or .ccd SCC Disassembly (SCC input only).\n\n";
+  print "    -x (OPTIONAL): Horizontal resolution for converted subtitles (if applicable).\n";
+  print "         (DEFAULT: 720 for STL, 640 for others. N/A for E608, G608, TTML, VTT, XML)\n";
+  print "    -y (OPTIONAL): Vertical resolution for converted subtitles (if applicable).\n";
+  print "         (DEFAULT: 480. N/A for E608, G608, TTML, VTT, XML)\n";
+  print "    -xr (OPTIONAL): Portion of the width of the video to display subtitles in.\n";
+  print "         Can be specified as a ratio (4:5) or a fraction (3/4). (DEFAULT: 2/3)\n";
+  print "    -yr (OPTIONAL): Portion of the height of the video to display subtitles in.\n";
+  print "         Can be specified as a ratio (7:8) or a fraction (4/5). (DEFAULT: 13/16)\n";
+  print "    -l (OPTIONAL): Language or Language Code for subtitles. Two character values will\n";
+  print "         be stored as the Language Code, longer will be stored as the Language. If only\n";
+  print "         a Language is specified, the first two characters will become the Language Code.\n";
+  print "         Only used by SAMI, SMPTE-TT, and TTML subtitles. (DEFAULT: English, EN)\n";
+  print "  NOTE: outfile argument is optional (name.scc/g608/e608 -> name.ass). Format is\n";
+  print "    controlled by outfile suffix: .ass Advanced SubStation (default),\n";
+  print "    .ccd SCC Disassembly (SCC input only), .e608 Extended Grid 608, .g608 Grid 608,\n";
+  print "    .qt.txt QuickTime Caption, .smi/.sami SAMI, .ssa SubStation Alpha,\n";
+  print "    .stl Spruce Technologies Language, .ttml/.dfxp Timed Text Markup Language,\n";
+  print "    .ttxt GPAC Timed Text, .vtt WebVTT, or .xml SMPTE-TT.\n\n";
 }
 
 sub frame {
@@ -979,8 +1095,7 @@ sub clearScreen {
       $character[$row][$col] = "\x00";
       $color[$row][$col] = "0";
        # other colors are Green, Blue, Cyan, Red, Yellow, Magenta, and Black
-      $underlined[$row][$col] = 0;
-      $italicized[$row][$col] = 0;
+      $styling[$row][$col] = "R";
       # The flash effect can only KIND OF be implemented in ASS. It will need to be approximated.
       #  Ignored for now.
       # On the other hand, background color and alpha level for text channels is possible with
@@ -997,8 +1112,7 @@ sub clearScreen {
   $row = 1;
   $col = 0;
   $color = "0";
-  $underlined = 0;
-  $italicized = 0;
+  $styling = "R";
   $bgcolor = "B";
 }
 
@@ -1010,8 +1124,7 @@ sub rollUp {
     for ($col = 0; $col < 40; $col++) { # should be 32, but I'm being safe
       $character[$row][$col] = $character[$row+1][$col];
       $color[$row][$col] = $color[$row+1][$col];
-      $underlined[$row][$col] = $underlined[$row+1][$col];
-      $italicized[$row][$col] = $italicized[$row+1][$col];
+      $styling[$row][$col] = $styling[$row+1][$col];
       $bgcolor[$row][$col] = $bgcolor[$row+1][$col];
     }
   }
@@ -1021,9 +1134,71 @@ sub rollUp {
 sub convertToSub {
   # print $character[1][0]."\n";
   my $subtitle = "";
+  
+  if ($convertFormat eq "Grid 608"){ # Grid 608 is just a dump of most of the array contents, so none of the other logic is needed
+    for (my $_row = 1; $_row < 16; $_row++) {
+      for (my $_col = 0; $_col < 32; $_col++) { # First 32 characters are the, well, characters
+         if($character[$_row][$_col] =~ m|[\x00-\x1F\x7F]|){ # Non-printable characters become spaces
+           $subtitle = $subtitle." ";
+         } else {
+           $subtitle = $subtitle.$character[$_row][$_col];
+         }
+      }
+      # Some versions of g608 have an errant extra Null between the characters and the colors, but we'll stick to the specification as written
+      #$subtitle = $subtitle."\x00";
+      for (my $_col = 0; $_col < 32; $_col++) { # Next 32 are the text color
+         if($character[$_row][$_col] eq "\x00"){ # Nulls have a color of "9"
+           $subtitle = $subtitle."9";
+         } else {
+           $subtitle = $subtitle.$color[$_row][$_col];
+         }
+      }
+      for (my $_col = 0; $_col < 32; $_col++) { # Last 32 are the styling
+         if ($character[$_row][$_col] ne "\x00" and $styling[$_row][$_col] =~ m/[BIRU]/){ # Italic, Underline, Both, and Regular are the only formats allowed in g608
+           $subtitle = $subtitle.$styling[$_row][$_col];      
+         } else {
+           $subtitle = $subtitle."R";
+         }
+      }
+      $subtitle = $subtitle."\n";
+    }
+    return $subtitle;
+  } elsif ($convertFormat eq "Extended Grid 608"){ # Extended Grid 608 is mostly the same, only with background color/alpha added, and the row/col count can change (I guess?)
+    for (my $_row = 1; $_row < ($e608Rows+1); $_row++) {
+      for (my $_col = 0; $_col < $e608Cols; $_col++) { # The first set is the characters
+         if($character[$_row][$_col] =~ m|[\x00-\x1F\x7F]|){ # Non-printable characters become spaces
+           $subtitle = $subtitle." ";
+         } else {
+           $subtitle = $subtitle.$character[$_row][$_col];
+         }
+      }
+      for (my $_col = 0; $_col < $e608Cols; $_col++) { # Next set is the text color
+         if($character[$_row][$_col] eq "\x00"){ # Nulls have a color of 9 (transparent)
+           $subtitle = $subtitle."9";
+         } else {
+           $subtitle = $subtitle.$color[$_row][$_col];
+         }
+      }
+      for (my $_col = 0; $_col < $e608Cols; $_col++) { # Next set is the styling. All are allowed, including Flash
+         if($character[$_row][$_col] eq "\x00"){ # Nulls have a style of R (regular)
+           $subtitle = $subtitle."R";
+         } else {
+           $subtitle = $subtitle.$styling[$_row][$_col];      
+         }
+      }
+      for (my $_col = 0; $_col < $e608Cols; $_col++) { # Finally there's the background color and alpha
+         if($character[$_row][$_col] eq "\x00"){ # Nulls have a background color of T (transparent)
+           $subtitle = $subtitle."T";
+         } else {
+           $subtitle = $subtitle.$bgcolor[$_row][$_col];
+         }
+      }
+      $subtitle = $subtitle."\n";
+    }
+    return $subtitle;
+  }
   $color = "0";
-  $underlined = 0;
-  $italicized = 0;
+  $styling = "R";
   $bgcolor = "B";
   if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
 
@@ -1055,45 +1230,28 @@ sub convertToSub {
   $endx++;
 
   for (my $_row = $starty; $_row < $endy; $_row++) {
-    # Write a new line if this isn't the first row. We need to do this here
-    #  rather than the end of the loop because we might need to close out style
-    #  tags on the final line of the subtitle
-    if ($_row > $starty){
-      # TTML has to be output per-line, so we need to close the span tags if there are any open (and reset values)
-      # TO DO: make this a sub-function
-      if(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($italicized) or ($underlined))){
-        $subtitle = $subtitle."</span>";
-        $color = "0";
-        $bgcolor = "B";
-        if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
-        $italicized = 0;
-        $underlined = 0;
-      }
-      $subtitle = $subtitle."\n";
-    }
     for (my $_col = $startx; $_col < $endx; $_col++) {
       if ($character[$_row][$_col] eq "\x00") {
         # End the spans on SMPTE-TT and TTML so we don't get background color where there's just blank space
-        if(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($italicized) or ($underlined))){
+        if(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($styling ne "R"))){
           $subtitle = $subtitle."</span>";
           $color = "0";
           $bgcolor = "B";
           if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
-          $italicized = 0;
-          $underlined = 0;
+          $styling = "R";
         }
         $subtitle = $subtitle."\xa0"; # add a no-break space
       # Y|y - new stuff. Some formats need special handling during construction, not after (TTML, TTXT, VTT)
       } elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") { # TTML uses span tags for EVERYTHING, so nesting them risks inaccurate conversion. Whenever there is a format change we need to close the span and open a new one
         # Any formatting change means we need to redo span tags
         $preformat = 1;
-        if(($color[$_row][$_col] ne $color) or ($underlined[$_row][$_col] ne $underlined) or ($italicized[$_row][$_col] ne $italicized) or ($bgcolor[$_row][$_col] ne $bgcolor)){
+        if(($color[$_row][$_col] ne $color) or ($styling[$_row][$_col] ne $styling) or ($bgcolor[$_row][$_col] ne $bgcolor)){
           # If there were any existing formats then we need to close the span
-          if(($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($underlined) or ($italicized)){
+          if(($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($styling ne "R")){
             $subtitle = $subtitle."</span>";
           }
           # If there's anything different from default, start a new span
-          if(($color[$_row][$_col] ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor[$_row][$_col] ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor[$_row][$_col] ne "T")) or $italicized[$_row][$_col] or $underlined[$_row][$_col]){
+          if(($color[$_row][$_col] ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor[$_row][$_col] ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor[$_row][$_col] ne "T")) or $styling[$_row][$_col] ne "R"){
             # Start the span
             $subtitle = $subtitle."<span";
             # Now see what changed. Start with color
@@ -1163,6 +1321,7 @@ sub convertToSub {
                 }
                 else { # No idea how we got here, but we need to output something, Purple. I like purple
                   $subtitle = $subtitle."800080";
+                  print "Warning: unrecognized background color ".$bgcolor[$_row][$_col]." in subtitle $subtitleNumber. Color will be interpreted as Purple.\n";
                 }
                 # Now add the transparency
                 if(uc($bgcolor[$_row][$_col]) ne $bgcolor[$_row][$_col]){ # Semi-transparent (lowercase)
@@ -1173,10 +1332,10 @@ sub convertToSub {
                 }
               }
             }
-            if($italicized[$_row][$_col]){
+            if($styling[$_row][$_col] eq "I" or $styling[$_row][$_col] eq "B"){
               $subtitle = $subtitle." tts:fontStyle=\"italic\"";
             }
-            if($underlined[$_row][$_col]){
+            if($styling[$_row][$_col] eq "U" or $styling[$_row][$_col] eq "B"){
               $subtitle = $subtitle." tts:textDecoration=\"underline\"";
             }
             $subtitle = $subtitle.">";
@@ -1185,8 +1344,7 @@ sub convertToSub {
         # Finally, copy over the formatting tags and the new character
         $color = $color[$_row][$_col];
         $bgcolor = $bgcolor[$_row][$_col];            
-        $italicized = $italicized[$_row][$_col];
-        $underlined = $underlined[$_row][$_col];
+        $styling = $styling[$_row][$_col];
         $subtitle = $subtitle.$character[$_row][$_col];
       } elsif ($convertFormat eq "WebVTT") { # WebVTT uses cue tags for color changes. Fortunately italic and underline just use normal html tags
         $preformat = 1;
@@ -1228,10 +1386,19 @@ sub convertToSub {
               }
             }
             # Now background color (and alpha)
+            # TO DO: Add flag to honor default black background
             if ($bgcolor[$_row][$_col] ne "B") {
               # Check if the background color changed or just the transparency (upper vs lower)
-              # Start with the color portion
-              if(uc($bgcolor) ne uc($bgcolor[$_row][$_col])){
+              # Start with flat transparency
+              if (uc($bgcolor[$_row][$_col]) eq "T") { # Transparent
+                if(!($regionList =~ m/bg_transparent,/)){
+                  print WH "::cue(.bg_transparent){\n  background-color: #00000000\n   }\n";
+                  $regionList = $regionList."bg_transparent, ";
+                }
+                $subtitle = $subtitle.".bg_transparent";
+              }
+              # Now check for other colors, doing the color portion first
+              elsif(uc($bgcolor) ne uc($bgcolor[$_row][$_col])){
   	            if (uc($bgcolor[$_row][$_col]) eq "W") { # White
 	              $subtitle = $subtitle.".bg_white";
     	        }
@@ -1253,40 +1420,73 @@ sub convertToSub {
                 elsif (uc($bgcolor[$_row][$_col]) eq "M") { # Magenta
                   $subtitle = $subtitle.".bg_magenta";
                 }
-                # Commenting out since we want black to be converted as transparent.
-                #  Later I'll add a mode to enable caption backgrounds by default
-#                if (uc($bgcolor[$_row][$_col]) eq "B") { # Black
-#                  $subtitle = $subtitle.".bg_black";
-#                }
+                elsif (uc($bgcolor[$_row][$_col]) eq "B") { # Black
+                  $subtitle = $subtitle.".bg_black";
+                }
+                else {
+                  my $cuename = "bg_".lc($bgcolor[$_row][$_col]).",";
+                  if(!($regionList =~ m/$cuename/)){
+                    print WH "::cue(.bg_".lc($bgcolor[$_row][$_col])."){\n  background-color: #800080FF\n   }\n";
+                    $regionList = $regionList."bg_".lc($bgcolor[$_row][$_col]).", ";
+                  }
+                  # Warn about the unrecognized color
+                  print "Warning: unrecognized background color ".$bgcolor[$_row][$_col]." in subtitle $subtitleNumber. Color will be interpreted as Purple.\n";
+                  $subtitle = $subtitle."bg_".lc($bgcolor[$_row][$_col]);
+                }
               }
-              # Commenting this out for now. No premade classes for transparency. Need to add custom ones. TO DO
-#              if (uc($bgcolor[$_row][$_col]) eq "T") { # Transparent
-#                $subtitle = $subtitle." tts:backgroundColor=\"transparent\"";
-#              }
-#              elsif(uc($bgcolor) eq $bgcolor and uc($bgcolor[$_row][$_col]) ne $bgcolor[$_row][$_col]){ # Semi-transparent (lowercase)
-#  	        $subtitle = $subtitle."80\"";
-#	      }
-#	      elsif(uc($bgcolor) ne $bgcolor and uc($bgcolor[$_row][$_col]) eq $bgcolor[$_row][$_col]){ # Opaque (uppercase)
-#	        $subtitle = $subtitle."FF\"";
-#	      }
+              if(uc($bgcolor[$_row][$_col]) ne $bgcolor[$_row][$_col]){ # Semi-transparent (lowercase)
+                # Check for an existing background color cue definition. If there isn't one, add it to the header
+                my $cuename = "bg_".$bgcolor[$_row][$_col]."_st,";
+                if(!($regionList =~ m/$cuename/)){
+                  if ($bgcolor[$_row][$_col] eq "w") { # White
+                    print WH "::cue(.bg_white_st){\n  background-color: #FFFFFF80\n   }\n";
+                  }
+                  elsif ($bgcolor[$_row][$_col] eq "g") { # Green (Lime)
+                    print WH "::cue(.bg_lime_st){\n  background-color: #00FF0080\n   }\n";
+                  }
+                  elsif ($bgcolor[$_row][$_col] eq "u") { # Blue
+                    print WH "::cue(.bg_blue_st){\n  background-color: #0000FF80\n   }\n";
+                  }
+                  elsif ($bgcolor[$_row][$_col] eq "c") { # Cyan
+                    print WH "::cue(.bg_cyan_st){\n  background-color: #00FFFF80\n   }\n";
+                  }
+                  elsif ($bgcolor[$_row][$_col] eq "r") { # Red
+                    print WH "::cue(.bg_red_st){\n  background-color: #FF000080\n   }\n";
+                  }
+                  elsif ($bgcolor[$_row][$_col] eq "y") { # Yellow
+                    print WH "::cue(.bg_yellow_st){\n  background-color: #FFFF0080\n   }\n";
+                  }
+                  elsif ($bgcolor[$_row][$_col] eq "m") { # Magenta
+                    print WH "::cue(.bg_magenta_st){\n  background-color: #FF00FF80\n   }\n";
+                  }
+                  elsif ($bgcolor[$_row][$_col] eq "b") { # Black
+                    print WH "::cue(.bg_black_st){\n  background-color: #00000080\n   }\n";
+                  }
+                  else { # No idea what this color is but add something
+                    print WH "::cue(.bg_".$bgcolor[$_row][$_col]."_st){\n  background-color: #80008080\n   }\n";
+                  }
+                  $regionList = $regionList."bg_".$bgcolor[$_row][$_col]."_st, ";
+                }
+ 	            $subtitle = $subtitle."_st";
+	          }
             }
             $subtitle = $subtitle.">";
           }
         }
         # Italics and underline are handled as normal
-        if ($underlined[$_row][$_col] ne $underlined) {
-          $subtitle = $subtitle.(($underlined[$_row][$_col]) ? "<u>" : "</u>");
-          $underlined = $underlined[$_row][$_col];
+        if (($styling[$_row][$_col] =~ m/[BU]/) ne ($styling =~ m/[BU]/)) {
+          $subtitle = $subtitle.(($styling[$_row][$_col] =~ m/[BU]/) ? "<u>" : "</u>");
+          $styling = $styling[$_row][$_col];
         }
-        if ($italicized[$_row][$_col] ne $italicized) {
-          $subtitle = $subtitle.(($italicized[$_row][$_col]) ? "<i>" : "</i>");
-          $italicized = $italicized[$_row][$_col];
+        if (($styling[$_row][$_col] =~ m/[BI]/) ne ($styling =~ m/[BI]/)) {
+          $subtitle = $subtitle.(($styling[$_row][$_col] =~ m/[BI]/) ? "<i>" : "</i>");
+          $styling = $styling[$_row][$_col];
         }
         # Finally, copy over the formatting tags and the new character
         $color = $color[$_row][$_col];
         $bgcolor = $bgcolor[$_row][$_col];            
         $subtitle = $subtitle.$character[$_row][$_col];
-      } else {
+      } else { # For all other formats we use SubStation syntax and find/replace as necessary later
         if ($color[$_row][$_col] ne $color) {
           if ($color[$_row][$_col] eq "0") { # White
             $subtitle = $subtitle."{\\c&HFFFFFF&}";
@@ -1354,19 +1554,30 @@ sub convertToSub {
 	      }
           $bgcolor = $bgcolor[$_row][$_col];
         }
-        if ($underlined[$_row][$_col] ne $underlined) {
-          $subtitle = $subtitle.(($underlined[$_row][$_col]) ? "{\\u1}" : "{\\u0}");
-          $underlined = $underlined[$_row][$_col];
+        if (($styling[$_row][$_col] =~ m/[BU]/) ne ($styling =~ m/[BU]/)) {
+          $subtitle = $subtitle.(($styling[$_row][$_col] =~ m/[BU]/) ? "{\\u1}" : "{\\u0}");
+          $styling = $styling[$_row][$_col];
         }
-        if ($italicized[$_row][$_col] ne $italicized) {
-          $subtitle = $subtitle.(($italicized[$_row][$_col]) ? "{\\i1}" : "{\\i0}");
-          $italicized = $italicized[$_row][$_col];
+        if (($styling[$_row][$_col] =~ m/[BI]/) ne ($styling =~ m/[BI]/)) {
+          $subtitle = $subtitle.(($styling[$_row][$_col] =~ m/[BI]/) ? "{\\i1}" : "{\\i0}");
+          $styling = $styling[$_row][$_col];
         }
         $subtitle = $subtitle.$character[$_row][$_col];
       }
     }
+    # TTML has to be output per-line, so we need to close the span tags if there are any open (and reset values)
+    if(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($styling ne "R"))){
+      $subtitle = $subtitle."</span>";
+      $color = "0";
+      $bgcolor = "B";
+      if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
+      $styling = "R";
+    }
+    $subtitle = $subtitle."\n";
   }
-  # Although it doesn't technically matter, close out any remaining color/style tags
+  # Remove any trailing newlines
+  $subtitle =~ s|\n+$||;
+  # Though it doesn't matter for most formats, close out any remaining tags
   if(!($preformat)){
     if ($color ne "0") {
       $color = "0";
@@ -1376,21 +1587,26 @@ sub convertToSub {
       $bgcolor = "B";
       $subtitle = $subtitle."{\\a3&H00&}";
     }
-    if ($underlined) {
-      $underlined = 0;
+    if ($styling =~ m/[BU]/) {
       $subtitle = $subtitle."{\\u0}";
     }
-    if ($italicized) {
-      $italicized = 0;
+    if ($styling =~ m/[BI]/) {
       $subtitle = $subtitle."{\\i0}";
     }
-  } elsif(($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") and (($color ne "0") or (($convertFormat eq "Timed Text Markup Language" and $bgcolor ne "B") or ($convertFormat eq "SMPTE-TT" and $bgcolor ne "T")) or ($italicized) or ($underlined))){
-    $subtitle = $subtitle."</span>";
-    $color = "0";
-    $bgcolor = "B";
-    if ($convertFormat eq "SMPTE-TT"){$bgcolor = "T";}
-    $italicized = 0;
-    $underlined = 0;
+    $styling = "R";
+  } elsif ($convertFormat eq "WebVTT"){ # WebVTT closes out tags slightly differently
+    if ($color ne "0" or $bgcolor ne "B") {
+      $color = "0";
+      $bgcolor = "B";
+      $subtitle = $subtitle."</c>";
+    }
+    if ($styling =~ m/[BU]/) {
+      $subtitle = $subtitle."</u>";
+    }
+    if ($styling =~ m/[BI]/) {
+      $subtitle = $subtitle."</i>";
+    }
+    $styling = "R";
   }
   # Now we need to readjust the y coordinates to be zero-indexed (i.e. subtract one from each)
   #  Otherwise vertical positioning math will be slightly off
@@ -1404,9 +1620,9 @@ sub outputHeader {
   my $convertFormat = shift(@_);
   if ($convertFormat eq "WebVTT"){
     print WH "WEBVTT\n\n";
-    print WH "STYLE\n::cue {\n  font-family: \"Courier New\", courier, monospace;\n  font-weight: bold;\n  font-size: 30pt;\n}\n\n";
+    print WH "STYLE\n::cue {\n  font-family: Courier New, monospace;\n  font-weight: bold;\n  font-size: 30pt;\n}\n";
     $input =~ m/.*\.(.*)$/; # Get the extension of the input file
-    print WH "NOTE Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n\n";
+    print TH "NOTE Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n\n";
   }
   # SMPTE-TT compliant (I think) thanks to https://docs.pbs.org/space/MM/5344210/Closed+Captioning
   # Also https://pub.smpte.org/latest/rp2052-10/rp2052-10-2013.pdf
@@ -1426,6 +1642,7 @@ sub outputHeader {
     # TO DO: add XDS data to header
     if($convertFormat eq "SMPTE-TT"){
       print WH "            <smpte:information xmlns:m608=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\" origin=\"http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt#cea608\"\n";
+      # TO DO: Parse and add relevant XDS information to header. This will require changing output to use writeTemp
       if ($channel < 0){$channel = 1;} # Default to 1 if we don't have a channel specified
       # Calculate the channel header values that SMPTE-TT uses. Channel 1 = 1,1, Channel 2 = 1,2, Channel 3 = 2,1, Channel 4 = 2,2
       my $chanp1 = $channel;
@@ -1442,10 +1659,10 @@ sub outputHeader {
       print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"Courier New\" tts:fontSize=\"2c\" tts:fontWeight=\"bold\"/>\n";
     }
     print WH "        </styling>\n        <layout>\n";
-    print WH "          <region xml:id=\"pop1\" tts:backgroundColor=\"transparent\"/>\n";
-    print WH "          <region xml:id=\"pop2\" tts:backgroundColor=\"transparent\"/>\n";
-    print WH "          <region xml:id=\"pop3\" tts:backgroundColor=\"transparent\"/>\n";
-    print WH "          <region xml:id=\"pop4\" tts:backgroundColor=\"transparent\"/>\n"; # We should only ever get 4 lines of captions
+    print WH "          <region xml:id=\"pop1\" tts:zIndex=\"1\" tts:backgroundColor=\"transparent\"/>\n";
+    print WH "          <region xml:id=\"pop2\" tts:zIndex=\"2\" tts:backgroundColor=\"transparent\"/>\n";
+    print WH "          <region xml:id=\"pop3\" tts:zIndex=\"3\" tts:backgroundColor=\"transparent\"/>\n";
+    print WH "          <region xml:id=\"pop4\" tts:zIndex=\"4\" tts:backgroundColor=\"transparent\"/>\n"; # We should only ever get 4 lines of captions
     print WH "        </layout>\n    </head>\n\n    <body style=\"s1\" xml:space=\"preserve\">\n        <div>\n";
   }
   # I'd like to get proper 3GPP/MPEG-4 Timed Text (tx3g) output, but for now this format converts straight to that via GPAC
@@ -1464,13 +1681,15 @@ sub outputHeader {
   elsif ($convertFormat eq "Spruce Technologies Language"){
     $input =~ m/.*\.(.*)$/;
     print WH "//Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n";
-    print WH "\$FontName \t= Courier New\n\$FontSize \t= 30\n\$HorzAlign \t= Center\n\$VertAlign \t= Top\n";
+    print WH "\$FontName = Courier New\n\$FontSize = 24\n\$HorzAlign = Center\n\$VertAlign = Top\n";
     # Colors (default) are 0: black, 1: offblack, 2: white, 3: red, 4: gray, 5: silver, 6: aqua/cyan, 7: fuschia/magenta, 8: yellow, 9: navy, 10: green, 11: maroon, 12: teal, 13: purple, 14: olive, 15: white
-    print WH "\$ColorIndex1\t= 0\n\$ColorIndex2\t= 3\n\$ColorIndex3\t= 2\n\$ColorIndex4\t= 0\n"; # C1 = outline, C2 = outer outline, C3 = text, C4 = background
-    print WH "\$Contrast1 \t= 15\n\$Contrast2 \t= 0\n\$Contrast3 \t= 15\n\$Contrast4 \t= 0\n"; # 0 = transparent, 15 = opaque
-    print WH "\$ForceDisplay\t= FALSE\n\$TapeOffset \t= FALSE\n\n";
+    # These are different in DVD Studio Pro, where 3 is white. Sometimes.
+    print WH "\$ColorIndex1 =3\n\$ColorIndex2 =4\n\$ColorIndex3 =1\n\$ColorIndex4 =0\n"; # C1 = outline, C2 = outer outline, C3 = text, C4 = background
+    print WH "\$Contrast1 =15\n\$Contrast2 =0\n\$Contrast3 =15\n\$Contrast4 =0\n"; # 0 = transparent, 15 = opaque
+    print WH "\$ForceDisplay =FALSE\n\$TapeOffset =FALSE\n\n";
     $lastvar1 = 0; # last Xoffset
     $lastvar2 = 0; # last Yoffset
+    $lastvar3 = "Center"; # last alignment
   }
   # SAMI support is theoretically compliant but limited because I have nothing to test against that fully processes the format.
   elsif ($convertFormat eq "SAMI") {
@@ -1485,7 +1704,7 @@ sub outputHeader {
     print WH "</STYLE>\n";
     print WH "</HEAD>\n\n";
     print WH "<BODY>\n";
-    print WH "<SYNC start=\"0\"><P CLASS=\"".uc($Language)."\">&nbsp;</P></SYNC>\n"; # Blank line at the start so the stream can be detected immediately
+    print WH "<SYNC start=\"0\"><P CLASS=\"".uc($LangCode)."CC\">&nbsp;</P></SYNC>\n"; # Blank line at the start so the stream can be detected immediately
     $lastvar1 = "00:00:00:00"; # For tracking last subtitle endtime
   }
   # https://web.archive.org/web/20031103011212/http://developer.apple.com/documentation/QuickTime/REF/refDataExchange.6.htm
@@ -1506,6 +1725,8 @@ sub outputHeader {
     print WH "Collisions: Normal\n";
     print WH "PlayResX: ".$ResX."\n";
     print WH "PlayResY: ".$ResY."\n";
+    print WH "LayoutResX: ".$ResX."\n";
+    print WH "LayoutResY: ".$ResY."\n";
     print WH "Timer: 100.0000\n";
     print WH "\n";
     print WH "[V4 Styles]\n";
@@ -1523,6 +1744,8 @@ sub outputHeader {
     print WH "Collisions: Normal\n";
     print WH "PlayResX: ".$ResX."\n";
     print WH "PlayResY: ".$ResY."\n";
+    print WH "LayoutResX: ".$ResX."\n";
+    print WH "LayoutResY: ".$ResY."\n";
     print WH "Timer: 100.0000\n";
     print WH "WrapStyle: 1\n"; # No line breaks other than manual ones
     print WH "\n";
@@ -1532,6 +1755,8 @@ sub outputHeader {
     print WH "\n";
     print WH "[Events]\n";
     print WH "Format: Layer, Start, End, Style, Actor, MarginL, MarginR, MarginV, Effect, Text\n";
+  } elsif ($convertFormat eq "Extended Grid 608") {
+    print WH "\xEF\xBB\xBF\n"; # The header is just a UTF-8 Byte Order Mark
   }
 }
 
@@ -1566,20 +1791,8 @@ sub outputSubtitle {
       $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
       $tc2 = sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms);
       # No subtitle manipulation needed since convertToSub handles all that
-      # Y|y - this would be nice if VLC would parse position with alignment, but it refuses to.
-      #  This code winds up with stuff crammed against the far sides of the screen with no margin
-      #
-      # Figure out what third of the horizontal our text is centered on and align accordingly
-      # my $xthird = int((($startx+$endx)/32)+0.5);
-      # output subtitle
-      #if ($xthird eq "2"){
-      #  print WH $tc1." --> ".$tc2." line:".int(($starty/15*100*$Yratio)+((1-$Yratio)/2*100))."% position:".int((($endx)/32*100*$Xratio)+((1-$Xratio)/2*100))."% align:end\n";
-      #} elsif ($xthird eq "0"){
-      #  print WH $tc1." --> ".$tc2." line:".int(($starty/15*100*$Yratio)+((1-$Yratio)/2*100))."% position:".int((($startx)/32*100*$Xratio)+((1-$Xratio)/2*100))."% align:start\n";
-      #} else {
-        print WH $tc1." --> ".$tc2." line:".int(($starty/15*100*$Yratio)+((1-$Yratio)/2*100))."% position:".int((($startx+$endx)/64*100*$Xratio)+((1-$Xratio)/2*100))."% align:center\n";
-      #}
-      print WH $subtitle."\n\n";
+      print TH $tc1." --> ".$tc2." line:".int(($starty/15*100*$Yratio)+((1-$Yratio)/2*100))."% position:".int((($startx+$endx)/64*100*$Xratio)+((1-$Xratio)/2*100))."% align:center\n";
+      print TH $subtitle."\n\n";
     }
     elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT"){
       # timecode manipulation
@@ -1596,15 +1809,15 @@ sub outputSubtitle {
       my $yoffset = 0;
       my $regionnum = 1;
       # Parse the subtitle out into individual lines
-      while($subtitle =~ /(.*\n)/g){
+      while($subtitle =~ /(.*)\n/){
       	my $subsub = $1; # It's fun to say
       	my $xoffset = 0;
       	if(!($subsub =~ m/^\s*$/)){ # skip completely blank lines
-          $subsub =~ s/\n|(\xa0+)$//g; # strip any newlines or trailing NBSPs
+          $subsub =~ s/\n|\xa0+$//g; # strip any newlines or trailing NBSPs
           # Check for leading NBSPs. If found, trim and offset the start of the line accordingly
           if($subsub =~ m/^(\xa0+)/){
             $xoffset = length($1);
-            $subsub =~ s/^(\xa0+)//;
+            $subsub =~ s/^\xa0+//;
           }
       	  print WH "            <p region=\"pop".$regionnum++."\" tts:origin=\"".(($startx+$xoffset+8)*2)."c ".((($starty+$yoffset)*2) + 3)."c\" begin=\"".$tc1."\" end=\"".$tc2."\">".$subsub."</p>\n"; # xml:id=\"sub".sprintf("%05d", $subtitleNumber)."\"
       	}
@@ -1628,6 +1841,7 @@ sub outputSubtitle {
       $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
       $tc1 = sprintf("%02d:%02d:%02d.%03d", $hh, $mm, $ss, $ms);
       # subtitle manipulation
+      # TO DO: only one background color change can be done (via highlight) so only warn if there are multiple. Also implement that
       if ($subtitle =~ m/{\\a3&H.{2}&}|{\\c3&H.{6}&}/gi){
         print "Warning: subtitle $subtitleNumber contains background color and/or alpha changes, which are not supported by $convertFormat and will not be present in the converted subtitles. Convert to another format if you want to preserve these features.\n";
       }
@@ -1684,20 +1898,46 @@ sub outputSubtitle {
       $subtitle =~ s/\n/|/g; # Replace newlines with bar
       $subtitle =~ s|{\\i[01]}|^I|g; # Replace italic close/open
       $subtitle =~ s|{\\u[01]}|^U|g; # Replace underline close/open
+      $subtitle =~ s|\xa0| |g; # Convert NBSP to normal space, since for some reason it gets converted to "¬†" by DVD Studio Pro
 
-      # Override X and/or Y offset if it has changed since the last subtitle
-      if($lastvar1 ne int((($startx+$endx)/64*(720*$Xratio))+(720*(1-$Xratio)/2)+0.5)){
-        # STL assumes a horizontal resolution of 720
-        $lastvar1 = int((($startx+$endx)/64*(720*$Xratio))+(720*(1-$Xratio)/2)+0.5);
-        print WH "\$Xoffset = ".$lastvar1."\n";
+      # Figure out what third of the horizontal our text is centered on and align accordingly
+      # STL subs use a flat 20% pixel "safe zone" (overscan) rather than the 2/3 and 13/16 horizontal and vertical ratios.
+      #  This is also used for the format's positioning coordinates, so we need to account for that. 
+      my $xregion = int((($startx+$endx)/16)+0.5);
+      if ($xregion > 2){ # Right aligned
+        if($lastvar3 ne "Right"){
+          $lastvar3 = "Right";
+          print WH "\$HorzAlign = ".$lastvar3."\n";
+        }
+        if($lastvar1 ne int(((32-$endx)/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5)*-1){
+          $lastvar1 = int(((32-$endx)/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5)*-1;
+          print WH "\$Xoffset =".$lastvar1."\n";
+        }
+      } elsif ($xregion < 2){ # Left aligned
+        if($lastvar3 ne "Left"){
+          $lastvar3 = "Left";
+          print WH "\$HorzAlign = ".$lastvar3."\n";
+        }
+        if($lastvar1 ne int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5)){
+          $lastvar1 = int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5);
+          print WH "\$Xoffset =".$lastvar1."\n";
+        }
+      } else { # Centered
+        if($lastvar3 ne "Center"){
+          $lastvar3 = "Center";
+          print WH "\$HorzAlign = ".$lastvar3."\n";
+        }
+        if($lastvar1 ne int((((($startx+$endx)/64*$ResX)-($ResX/2))*$Xratio)+0.5)){
+          $lastvar1 = int((((($startx+$endx)/64*$ResX)-($ResX/2))*$Xratio)+0.5);
+          print WH "\$Xoffset =".$lastvar1."\n";
+        }
       }
-      if($lastvar2 ne int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5)){
-        $lastvar2 = int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5);
-        # Vertical can be 480 or 576, which we can override (TO DO)
-        print WH "\$Yoffset = ".$lastvar2."\n";
+      if($lastvar2 ne int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)-($ResY/10)+0.5)){
+        $lastvar2 = int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)-($ResY/10)+0.5);
+        print WH "\$Yoffset =".$lastvar2."\n";
       }
 
-      print WH $tc1."\t,\t".$tc2."\t,\t".$subtitle."\n";
+      print WH "\n".$tc1.",".$tc2.",\t".$subtitle."\n\n";
     }
     # SAMI support works in theory, but there's not a single modern player that actually
     #  honors the positioning information (or anything in the header)
@@ -1706,7 +1946,7 @@ sub outputSubtitle {
       # First, check if the start time is within half a second of the last subtitle's endTime.
       #  If so, we don't need to write the last sub's endTime.
       if($lastvar1 ne "00:00:00:00" and frame($startTime) - frame($lastvar1) > $fps/2){
-        print WH "<SYNC start=\"".sprintf("%d", (frame($lastvar1) / $fps * 1000) + 0.5)."\"><P CLASS=\"".uc($Language)."\">&nbsp;</P></SYNC>\n\n";
+        print WH "<SYNC start=\"".sprintf("%d", (frame($lastvar1) / $fps * 1000) + 0.5)."\"><P CLASS=\"".uc($LangCode)."CC\">&nbsp;</P></SYNC>\n\n";
       } else {
         print WH "\n";
       }
@@ -1733,7 +1973,9 @@ sub outputSubtitle {
       #$subtitle =~ s/\xa0/&nbsp;/g;
       $subtitle =~ s|\n|<br>|g; # convert newlines to <br>
       # output subtitle
-      print WH "<SYNC start=\"".$tc1."\"><P CLASS=\"".uc($Language)."\" STYLE=\"left: ".int(((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2))*3/4+0.5)."pt; top: ".int(((($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt; position: absolute;\">"; # STYLE=\"margin-left: ".$Lmargin."pt; margin-right: ".$Rmargin."pt; margin-top: ".int(((($starty/16*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt;\"
+      # FFMPEG-derived players will honor font tags in individual subtitles, but without positioning info there's not much point
+      # SAMI spec says positioning should be defined in points rather than pixels. Fortunately the conversion is easy: 3 points to 4 pixels
+      print WH "<SYNC start=\"".$tc1."\"><P CLASS=\"".uc($LangCode)."CC\" STYLE=\"left: ".int(((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2))*3/4+0.5)."pt; top: ".int(((($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt; position: absolute;\">"; # STYLE=\"margin-left: ".$Lmargin."pt; margin-right: ".$Rmargin."pt; margin-top: ".int(((($starty/16*($ResY*$Yratio))+($ResY*(1-$Yratio)/2))*3/4)+0.5)."pt;\"
       print WH $subtitle."</P></SYNC>\n";
       $lastvar1 = $endTime;
     }
@@ -1857,6 +2099,15 @@ sub outputSubtitle {
       # output subtitle. Unlike SSA we can just use the "pos" tag override to set the position directly, no funky margin trickery needed.
       print WH "Dialogue: 0,".$tc1.",".$tc2.",*Default,,0000,0000,0000,,{\\pos(".int((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5).",".int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5).")}".$subtitle."\n";
     }
+    elsif ($convertFormat eq "Grid 608" or $convertFormat eq "Extended Grid 608") { # (Extended) Grid 608 is blood simple
+      ($hh, $mm, $ss, $ff) = split("[:;]", $startTime);
+      $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+      $tc1 = sprintf("%02d:%02d:%02d,%03d", $hh, $mm, $ss, $ms);
+      ($hh, $mm, $ss, $ff) = split("[:;]", $endTime);
+      $ms = sprintf("%d", ($ff / $fps * 1000) + 0.5);
+      $tc2 = sprintf("%02d:%02d:%02d,%03d", $hh, $mm, $ss, $ms);
+      print WH $subtitleNumber."\n".$tc1." --> ".$tc2."\n".$subtitle."\n";
+    }
     # $startTime = "";
     # $endTime = "";
     # $subtitle = "";
@@ -1868,8 +2119,6 @@ sub outputFooter {
   my $convertFormat = shift(@_);
   
   # Y|y - check for a temp file and write those lines to the output file
-  #  Nothing uses this now that I've figured out the new way to do TTML,
-  #  but I'll leave it in for possible future use
   if($writeTemp){
     seek(TH, 0, 0);
     while(<TH>){
@@ -1945,89 +2194,89 @@ sub disCommand {
           /2f/ && do {$bgcolor = "b"; $extendedChar = 1; last SWITCH;};
           
           /40/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /41/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /42/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /43/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /44/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /45/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /46/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /47/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /48/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /49/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4a/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /4b/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4c/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4d/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4e/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /4f/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /50/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /51/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /52/ && do {$row = 11; $col = 4; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /53/ && do {$row = 11; $col = 4; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /54/ && do {$row = 11; $col = 8; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /55/ && do {$row = 11; $col = 8; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /56/ && do {$row = 11; $col = 12; $ruBottom = 11;  $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /57/ && do {$row = 11; $col = 12; $ruBottom = 11;  $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /58/ && do {$row = 11; $col = 16; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /59/ && do {$row = 11; $col = 16; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5a/ && do {$row = 11; $col = 20; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5b/ && do {$row = 11; $col = 20; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5c/ && do {$row = 11; $col = 24; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5d/ && do {$row = 11; $col = 24; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5e/ && do {$row = 11; $col = 28; $ruBottom = 11; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5f/ && do {$row = 11; $col = 28; $ruBottom = 11; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
         };
       };
       /11/ && do {
         for ($lo) {
-          /20/ && do {$color = "0"; $italicized = 0; $underlined = 0; last SWITCH;};
-          /21/ && do {$color = "0"; $italicized = 0; $underlined = 1; last SWITCH;};
-          /22/ && do {$color = "1"; $italicized = 0; $underlined = 0; last SWITCH;};
-          /23/ && do {$color = "1"; $italicized = 0; $underlined = 1; last SWITCH;};
-          /24/ && do {$color = "2"; $italicized = 0; $underlined = 0; last SWITCH;};
-          /25/ && do {$color = "2"; $italicized = 0; $underlined = 1; last SWITCH;};
-          /26/ && do {$color = "3"; $italicized = 0; $underlined = 0; last SWITCH;};
-          /27/ && do {$color = "3"; $italicized = 0; $underlined = 1; last SWITCH;};
-          /28/ && do {$color = "4"; $italicized = 0; $underlined = 0; last SWITCH;};
-          /29/ && do {$color = "4"; $italicized = 0; $underlined = 1; last SWITCH;};
-          /2a/ && do {$color = "5"; $italicized = 0; $underlined = 0; last SWITCH;};
-          /2b/ && do {$color = "5"; $italicized = 0; $underlined = 1; last SWITCH;};
-          /2c/ && do {$color = "6"; $italicized = 0; $underlined = 0; last SWITCH;};
-          /2d/ && do {$color = "6"; $italicized = 0; $underlined = 1; last SWITCH;};
-          /2e/ && do {$italicized = 1; last SWITCH;};
-          /2f/ && do {$italicized = 1; $underlined = 1; last SWITCH;};
+          /20/ && do {$color = "0"; $$styling = "R"; last SWITCH;};
+          /21/ && do {$color = "0"; $styling = "U"; last SWITCH;};
+          /22/ && do {$color = "1"; $$styling = "R"; last SWITCH;};
+          /23/ && do {$color = "1"; $styling = "U"; last SWITCH;};
+          /24/ && do {$color = "2"; $$styling = "R"; last SWITCH;};
+          /25/ && do {$color = "2"; $styling = "U"; last SWITCH;};
+          /26/ && do {$color = "3"; $$styling = "R"; last SWITCH;};
+          /27/ && do {$color = "3"; $styling = "U"; last SWITCH;};
+          /28/ && do {$color = "4"; $$styling = "R"; last SWITCH;};
+          /29/ && do {$color = "4"; $styling = "U"; last SWITCH;};
+          /2a/ && do {$color = "5"; $$styling = "R"; last SWITCH;};
+          /2b/ && do {$color = "5"; $styling = "U"; last SWITCH;};
+          /2c/ && do {$color = "6"; $$styling = "R"; last SWITCH;};
+          /2d/ && do {$color = "6"; $styling = "U"; last SWITCH;};
+          /2e/ && do {$styling = "I"; last SWITCH;};
+          /2f/ && do {$styling = "B"; last SWITCH;};
           /30/ && do {$commandtoken = "®"; last SWITCH;};
           /31/ && do {$commandtoken = "°"; last SWITCH;};
           /32/ && do {$commandtoken = "½"; last SWITCH;};
@@ -2045,133 +2294,133 @@ sub disCommand {
           /3e/ && do {$commandtoken = "ô"; last SWITCH;};
           /3f/ && do {$commandtoken = "û"; last SWITCH;};
           /40/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /41/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /42/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /43/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /44/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /45/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /46/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /47/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /48/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /49/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4a/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /4b/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4c/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4d/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4e/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /4f/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /50/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /51/ && do {$row = 1; $col = 0; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /52/ && do {$row = 1; $col = 4; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /53/ && do {$row = 1; $col = 4; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /54/ && do {$row = 1; $col = 8; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /55/ && do {$row = 1; $col = 8; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /56/ && do {$row = 1; $col = 12; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /57/ && do {$row = 1; $col = 12; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /58/ && do {$row = 1; $col = 16; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /59/ && do {$row = 1; $col = 16; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5a/ && do {$row = 1; $col = 20; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5b/ && do {$row = 1; $col = 20; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5c/ && do {$row = 1; $col = 24; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5d/ && do {$row = 1; $col = 24; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5e/ && do {$row = 1; $col = 28; $ruBottom = 1; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5f/ && do {$row = 1; $col = 28; $ruBottom = 1; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /60/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /61/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /62/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /63/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /64/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /65/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /66/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /67/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /68/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /69/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6a/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /6b/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6c/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6d/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6e/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /6f/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /70/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /71/ && do {$row = 2; $col = 0; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /72/ && do {$row = 2; $col = 4; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /73/ && do {$row = 2; $col = 4; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /74/ && do {$row = 2; $col = 8; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /75/ && do {$row = 2; $col = 8; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /76/ && do {$row = 2; $col = 12; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /77/ && do {$row = 2; $col = 12; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /78/ && do {$row = 2; $col = 16; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /79/ && do {$row = 2; $col = 16; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7a/ && do {$row = 2; $col = 20; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7b/ && do {$row = 2; $col = 20; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7c/ && do {$row = 2; $col = 24; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7d/ && do {$row = 2; $col = 24; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7e/ && do {$row = 2; $col = 28; $ruBottom = 2; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7f/ && do {$row = 2; $col = 28; $ruBottom = 2; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
         };
       };
       /12/ && do {
@@ -2209,133 +2458,133 @@ sub disCommand {
           /3e/ && do {$commandtoken = "«"; $extendedChar = 1; last SWITCH;};
           /3f/ && do {$commandtoken = "»"; $extendedChar = 1; last SWITCH;};
           /40/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /41/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /42/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /43/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /44/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /45/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /46/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /47/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /48/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /49/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4a/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /4b/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4c/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4d/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4e/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /4f/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /50/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /51/ && do {$row = 3; $col = 0; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /52/ && do {$row = 3; $col = 4; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /53/ && do {$row = 3; $col = 4; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /54/ && do {$row = 3; $col = 8; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /55/ && do {$row = 3; $col = 8; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /56/ && do {$row = 3; $col = 12; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /57/ && do {$row = 3; $col = 12; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /58/ && do {$row = 3; $col = 16; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /59/ && do {$row = 3; $col = 16; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5a/ && do {$row = 3; $col = 20; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5b/ && do {$row = 3; $col = 20; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5c/ && do {$row = 3; $col = 24; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5d/ && do {$row = 3; $col = 24; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5e/ && do {$row = 3; $col = 28; $ruBottom = 3; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5f/ && do {$row = 3; $col = 28; $ruBottom = 3; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /60/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /61/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /62/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /63/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /64/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /65/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /66/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /67/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /68/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /69/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6a/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /6b/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6c/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6d/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6e/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /6f/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /70/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /71/ && do {$row = 4; $col = 0; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /72/ && do {$row = 4; $col = 4; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /73/ && do {$row = 4; $col = 4; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /74/ && do {$row = 4; $col = 8; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /75/ && do {$row = 4; $col = 8; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /76/ && do {$row = 4; $col = 12; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /77/ && do {$row = 4; $col = 12; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /78/ && do {$row = 4; $col = 16; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /79/ && do {$row = 4; $col = 16; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7a/ && do {$row = 4; $col = 20; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7b/ && do {$row = 4; $col = 20; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7c/ && do {$row = 4; $col = 24; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7d/ && do {$row = 4; $col = 24; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7e/ && do {$row = 4; $col = 28; $ruBottom = 4; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7f/ && do {$row = 4; $col = 28; $ruBottom = 4; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
         };
       };
       /13/ && do {
@@ -2375,133 +2624,133 @@ sub disCommand {
           /3e/ && do {$commandtoken = "\N{U+2517}"; $extendedChar = 1; last SWITCH;}; # {ll}
           /3f/ && do {$commandtoken = "\N{U+251B}"; $extendedChar = 1; last SWITCH;}; # {lr}
           /40/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /41/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /42/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /43/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /44/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /45/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /46/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /47/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /48/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /49/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4a/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /4b/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4c/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4d/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4e/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /4f/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /50/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /51/ && do {$row = 12; $col = 0; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /52/ && do {$row = 12; $col = 4; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /53/ && do {$row = 12; $col = 4; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /54/ && do {$row = 12; $col = 8; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /55/ && do {$row = 12; $col = 8; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /56/ && do {$row = 12; $col = 12; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /57/ && do {$row = 12; $col = 12; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /58/ && do {$row = 12; $col = 16; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /59/ && do {$row = 12; $col = 16; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5a/ && do {$row = 12; $col = 20; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5b/ && do {$row = 12; $col = 20; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5c/ && do {$row = 12; $col = 24; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5d/ && do {$row = 12; $col = 24; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5e/ && do {$row = 12; $col = 28; $ruBottom = 12; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5f/ && do {$row = 12; $col = 28; $ruBottom = 12; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /60/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /61/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /62/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /63/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /64/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /65/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /66/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /67/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /68/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /69/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6a/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /6b/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6c/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6d/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6e/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /6f/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /70/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /71/ && do {$row = 13; $col = 0; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /72/ && do {$row = 13; $col = 4; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /73/ && do {$row = 13; $col = 4; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /74/ && do {$row = 13; $col = 8; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /75/ && do {$row = 13; $col = 8; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /76/ && do {$row = 13; $col = 12; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /77/ && do {$row = 13; $col = 12; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /78/ && do {$row = 13; $col = 16; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /79/ && do {$row = 13; $col = 16; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7a/ && do {$row = 13; $col = 20; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7b/ && do {$row = 13; $col = 20; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7c/ && do {$row = 13; $col = 24; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7d/ && do {$row = 13; $col = 24; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7e/ && do {$row = 13; $col = 28; $ruBottom = 13; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7f/ && do {$row = 13; $col = 28; $ruBottom = 13; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
         };
       };
       /14/ && do { # skipping codes that don't apply
@@ -2632,133 +2881,133 @@ sub disCommand {
                       }
                       last SWITCH;}; # {EOC}
           /40/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /41/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /42/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /43/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /44/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /45/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /46/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /47/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /48/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /49/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4a/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /4b/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4c/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4d/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4e/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /4f/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /50/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /51/ && do {$row = 14; $col = 0; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /52/ && do {$row = 14; $col = 4; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /53/ && do {$row = 14; $col = 4; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /54/ && do {$row = 14; $col = 8; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /55/ && do {$row = 14; $col = 8; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /56/ && do {$row = 14; $col = 12; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /57/ && do {$row = 14; $col = 12; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /58/ && do {$row = 14; $col = 16; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /59/ && do {$row = 14; $col = 16; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5a/ && do {$row = 14; $col = 20; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5b/ && do {$row = 14; $col = 20; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5c/ && do {$row = 14; $col = 24; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5d/ && do {$row = 14; $col = 24; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5e/ && do {$row = 14; $col = 28; $ruBottom = 14; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5f/ && do {$row = 14; $col = 28; $ruBottom = 14; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /60/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /61/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /62/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /63/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /64/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /65/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /66/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /67/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /68/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /69/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6a/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /6b/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6c/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6d/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6e/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /6f/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /70/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /71/ && do {$row = 15; $col = 0; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /72/ && do {$row = 15; $col = 4; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /73/ && do {$row = 15; $col = 4; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /74/ && do {$row = 15; $col = 8; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /75/ && do {$row = 15; $col = 8; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /76/ && do {$row = 15; $col = 12; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /77/ && do {$row = 15; $col = 12; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /78/ && do {$row = 15; $col = 16; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /79/ && do {$row = 15; $col = 16; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7a/ && do {$row = 15; $col = 20; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7b/ && do {$row = 15; $col = 20; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7c/ && do {$row = 15; $col = 24; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7d/ && do {$row = 15; $col = 24; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7e/ && do {$row = 15; $col = 28; $ruBottom = 15; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7f/ && do {$row = 15; $col = 28; $ruBottom = 15; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
         };
       };
       /15/ && do {
@@ -2844,265 +3093,265 @@ sub disCommand {
                       }
                       last SWITCH;}; # {EOC}
           /40/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /41/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /42/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /43/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /44/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /45/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /46/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /47/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /48/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /49/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4a/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /4b/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4c/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4d/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4e/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /4f/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /50/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /51/ && do {$row = 5; $col = 0; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /52/ && do {$row = 5; $col = 4; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /53/ && do {$row = 5; $col = 4; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /54/ && do {$row = 5; $col = 8; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /55/ && do {$row = 5; $col = 8; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /56/ && do {$row = 5; $col = 12; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /57/ && do {$row = 5; $col = 12; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /58/ && do {$row = 5; $col = 16; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /59/ && do {$row = 5; $col = 16; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5a/ && do {$row = 5; $col = 20; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5b/ && do {$row = 5; $col = 20; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5c/ && do {$row = 5; $col = 24; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5d/ && do {$row = 5; $col = 24; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5e/ && do {$row = 5; $col = 28; $ruBottom = 5; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5f/ && do {$row = 5; $col = 28; $ruBottom = 5; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /60/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /61/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /62/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /63/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /64/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /65/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /66/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /67/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /68/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /69/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6a/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /6b/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6c/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6d/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6e/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /6f/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /70/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /71/ && do {$row = 6; $col = 0; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /72/ && do {$row = 6; $col = 4; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /73/ && do {$row = 6; $col = 4; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /74/ && do {$row = 6; $col = 8; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /75/ && do {$row = 6; $col = 8; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /76/ && do {$row = 6; $col = 12; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /77/ && do {$row = 6; $col = 12; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /78/ && do {$row = 6; $col = 16; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /79/ && do {$row = 6; $col = 16; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7a/ && do {$row = 6; $col = 20; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7b/ && do {$row = 6; $col = 20; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7c/ && do {$row = 6; $col = 24; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7d/ && do {$row = 6; $col = 24; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7e/ && do {$row = 6; $col = 28; $ruBottom = 6; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7f/ && do {$row = 6; $col = 28; $ruBottom = 6; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
         };
       };
       /16/ && do {
         for ($lo) {
           /40/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /41/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /42/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /43/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /44/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /45/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /46/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /47/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /48/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /49/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4a/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /4b/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4c/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4d/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4e/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /4f/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /50/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /51/ && do {$row = 7; $col = 0; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /52/ && do {$row = 7; $col = 4; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /53/ && do {$row = 7; $col = 4; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /54/ && do {$row = 7; $col = 8; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /55/ && do {$row = 7; $col = 8; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /56/ && do {$row = 7; $col = 12; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /57/ && do {$row = 7; $col = 12; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /58/ && do {$row = 7; $col = 16; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /59/ && do {$row = 7; $col = 16; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5a/ && do {$row = 7; $col = 20; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5b/ && do {$row = 7; $col = 20; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5c/ && do {$row = 7; $col = 24; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5d/ && do {$row = 7; $col = 24; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5e/ && do {$row = 7; $col = 28; $ruBottom = 7; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5f/ && do {$row = 7; $col = 28; $ruBottom = 7; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /60/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /61/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /62/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /63/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /64/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /65/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /66/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /67/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /68/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /69/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6a/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /6b/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6c/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6d/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6e/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /6f/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /70/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /71/ && do {$row = 8; $col = 0; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /72/ && do {$row = 8; $col = 4; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /73/ && do {$row = 8; $col = 4; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /74/ && do {$row = 8; $col = 8; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /75/ && do {$row = 8; $col = 8; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /76/ && do {$row = 8; $col = 12; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /77/ && do {$row = 8; $col = 12; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /78/ && do {$row = 8; $col = 16; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /79/ && do {$row = 8; $col = 16; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7a/ && do {$row = 8; $col = 20; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7b/ && do {$row = 8; $col = 20; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7c/ && do {$row = 8; $col = 24; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7d/ && do {$row = 8; $col = 24; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7e/ && do {$row = 8; $col = 28; $ruBottom = 8; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7f/ && do {$row = 8; $col = 28; $ruBottom = 8; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
         };
       };
       /17/ && do { # skipping codes that don't apply
@@ -3110,136 +3359,136 @@ sub disCommand {
           /21/ && do {$col += 1; last SWITCH;}; # {TO1}
           /22/ && do {$col += 2; last SWITCH;}; # {TO2}
           /23/ && do {$col += 3; last SWITCH;}; # {TO3}
-          /2e/ && do {$color = "8"; $underlined = 0; $italicized = 0; last SWITCH;};
-          /2f/ && do {$color = "8"; $underlined = 1; $italicized = 0; last SWITCH;};
+          /2e/ && do {$color = "8"; $styling = "R"; last SWITCH;};
+          /2f/ && do {$color = "8"; $styling = "U"; last SWITCH;};
           /40/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /41/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /42/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /43/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /44/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /45/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /46/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /47/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /48/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /49/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4a/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /4b/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4c/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4d/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /4e/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /4f/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /50/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /51/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /52/ && do {$row = 9; $col = 4; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /53/ && do {$row = 9; $col = 4; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /54/ && do {$row = 9; $col = 8; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /55/ && do {$row = 9; $col = 8; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /56/ && do {$row = 9; $col = 12; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /57/ && do {$row = 9; $col = 12; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /58/ && do {$row = 9; $col = 16; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /59/ && do {$row = 9; $col = 16; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5a/ && do {$row = 9; $col = 20; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5b/ && do {$row = 9; $col = 20; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5c/ && do {$row = 9; $col = 24; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5d/ && do {$row = 9; $col = 24; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /5e/ && do {$row = 9; $col = 28; $ruBottom = 9; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /5f/ && do {$row = 9; $col = 28; $ruBottom = 9; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /60/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /61/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /62/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "1";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /63/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "1";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /64/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "2";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /65/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "2";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /66/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "3";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /67/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "3";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /68/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "4";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /69/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "4";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6a/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "5";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /6b/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "5";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6c/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6d/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "6";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /6e/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 1; last SWITCH;};
+                      $styling = "I"; last SWITCH;};
           /6f/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 1; last SWITCH;};
+                      $styling = "B"; last SWITCH;};
           /70/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /71/ && do {$row = 10; $col = 0; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /72/ && do {$row = 10; $col = 4; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /73/ && do {$row = 10; $col = 4; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /74/ && do {$row = 10; $col = 8; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /75/ && do {$row = 10; $col = 8; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /76/ && do {$row = 10; $col = 12; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /77/ && do {$row = 10; $col = 12; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /78/ && do {$row = 10; $col = 16; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /79/ && do {$row = 10; $col = 16; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7a/ && do {$row = 10; $col = 20; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7b/ && do {$row = 10; $col = 20; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7c/ && do {$row = 10; $col = 24; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7d/ && do {$row = 10; $col = 24; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
           /7e/ && do {$row = 10; $col = 28; $ruBottom = 10; $color = "0";
-                      $underlined = 0; $italicized = 0; last SWITCH;};
+                      $styling = "R"; last SWITCH;};
           /7f/ && do {$row = 10; $col = 28; $ruBottom = 10; $color = "0";
-                      $underlined = 1; $italicized = 0; last SWITCH;};
+                      $styling = "U"; last SWITCH;};
         };
       };
     }
@@ -3616,14 +3865,14 @@ sub disCommand {
         /24/ && do {$commandtoken = "{DER}"; last SWITCH;};
         /25/ && do {$commandtoken = "{RU2}"; $mode = "CC"; last SWITCH;};
         /26/ && do {$commandtoken = "{RU3}"; $mode = "CC"; last SWITCH;};
-        /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
-        /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
+        /a7/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
+        /a8/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
         /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
-        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
+        /ab/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
-        /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
+        /ae/ && do {$commandtoken = "{ENM}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{EOC}"; last SWITCH;};
         /40/ && do {$commandtoken = "{14Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{14WhU}"; last SWITCH;};
@@ -3700,14 +3949,14 @@ sub disCommand {
         /24/ && do {$commandtoken = "{DER}"; last SWITCH;};
         /25/ && do {$commandtoken = "{RU2}"; $mode = "CC"; last SWITCH;};
         /26/ && do {$commandtoken = "{RU3}"; $mode = "CC"; last SWITCH;};
-        /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
-        /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
+        /a7/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
+        /a8/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
         /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
-        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
+        /ab/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
-        /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
+        /ae/ && do {$commandtoken = "{ENM}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{EOC}"; last SWITCH;};
         /40/ && do {$commandtoken = "{05Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{05WhU}"; last SWITCH;};
@@ -4283,15 +4532,15 @@ sub disCommand {
         /24/ && do {$commandtoken = "{DER}"; last SWITCH;};
         /25/ && do {$commandtoken = "{RU2}"; $mode = "CC"; last SWITCH;};
         /26/ && do {$commandtoken = "{RU3}"; $mode = "CC"; last SWITCH;};
-        /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
-        /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
+        /a7/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
+        /a8/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
         # text channel 2 is reserved for ITV messages
         /2a/ && do {$commandtoken = "{TR}"; $mode = "ITV"; last SWITCH;};
-        /2b/ && do {$commandtoken = "{RTD}"; $mode = "ITV"; last SWITCH;};
+        /ab/ && do {$commandtoken = "{RTD}"; $mode = "ITV"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
-        /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
+        /ae/ && do {$commandtoken = "{ENM}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{EOC}"; last SWITCH;};
         /40/ && do {$commandtoken = "{14Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{14WhU}"; last SWITCH;};
@@ -4368,14 +4617,14 @@ sub disCommand {
         /24/ && do {$commandtoken = "{DER}"; last SWITCH;};
         /25/ && do {$commandtoken = "{RU2}"; $mode = "CC"; last SWITCH;};
         /26/ && do {$commandtoken = "{RU3}"; $mode = "CC"; last SWITCH;};
-        /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
-        /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
+        /a7/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
+        /a8/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
         /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
-        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
+        /ab/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
-        /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
+        /ae/ && do {$commandtoken = "{ENM}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{EOC}"; last SWITCH;};
         /40/ && do {$commandtoken = "{05Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{05WhU}"; last SWITCH;};
@@ -5138,7 +5387,7 @@ sub disXDS {
        ($xdsList[4 - $XDSPosition{$type}] != 15)) {
       $checksumPosition += 2;
       my $ratio = "_"; # optional byte 4 is aspect ratio, either Anamorphic "A" or not "_"
-      if ($xdsList[4 - $XDSPosition{$type}] = 65) {
+      if ($xdsList[4 - $XDSPosition{$type}] eq 65) {
         $ratio = "A";
       }
       $xds = $xds." ".$ratio;
@@ -7422,7 +7671,8 @@ sub asXDS {
         };
         /CH/ && do {                        # Channel Map Header
           $xdslist[1] = 0x42;
-          my $hi, $lo;
+          my $hi;
+          my $lo;
           if ($position == 10) {
             # channel is stored as high and low bytes
             my $channel = substr $line, 10, 4; 
@@ -7464,7 +7714,8 @@ sub asXDS {
             my $channel = $elements[$elementCounter++];
             my $userChannel = "";
             my $tuneChannel = "";
-            my $hi, $lo;
+            my $hi;
+            my $lo;
             my $remappedFactor = 0;
             # optional remapping and tune channel
             if ($channel =~ /=/) {
