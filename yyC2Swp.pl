@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "1.0";
+my $Version = "1.0.1";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -153,6 +153,7 @@ my $Version = "1.0";
 #   command line options to override X and Y resolution settings used for calculations.
 #   Add command line option to override Language and Language Code variables. Add
 #   command line option to override display/"safe" display area for X and Y.
+# 1.0.1 Fix error with misnamed "$$styling" variable references
 sub usage;
 sub frame;
 sub timecodeof;
@@ -2261,19 +2262,19 @@ sub disCommand {
       };
       /11/ && do {
         for ($lo) {
-          /20/ && do {$color = "0"; $$styling = "R"; last SWITCH;};
+          /20/ && do {$color = "0"; $styling = "R"; last SWITCH;};
           /21/ && do {$color = "0"; $styling = "U"; last SWITCH;};
-          /22/ && do {$color = "1"; $$styling = "R"; last SWITCH;};
+          /22/ && do {$color = "1"; $styling = "R"; last SWITCH;};
           /23/ && do {$color = "1"; $styling = "U"; last SWITCH;};
-          /24/ && do {$color = "2"; $$styling = "R"; last SWITCH;};
+          /24/ && do {$color = "2"; $styling = "R"; last SWITCH;};
           /25/ && do {$color = "2"; $styling = "U"; last SWITCH;};
-          /26/ && do {$color = "3"; $$styling = "R"; last SWITCH;};
+          /26/ && do {$color = "3"; $styling = "R"; last SWITCH;};
           /27/ && do {$color = "3"; $styling = "U"; last SWITCH;};
-          /28/ && do {$color = "4"; $$styling = "R"; last SWITCH;};
+          /28/ && do {$color = "4"; $styling = "R"; last SWITCH;};
           /29/ && do {$color = "4"; $styling = "U"; last SWITCH;};
-          /2a/ && do {$color = "5"; $$styling = "R"; last SWITCH;};
+          /2a/ && do {$color = "5"; $styling = "R"; last SWITCH;};
           /2b/ && do {$color = "5"; $styling = "U"; last SWITCH;};
-          /2c/ && do {$color = "6"; $$styling = "R"; last SWITCH;};
+          /2c/ && do {$color = "6"; $styling = "R"; last SWITCH;};
           /2d/ && do {$color = "6"; $styling = "U"; last SWITCH;};
           /2e/ && do {$styling = "I"; last SWITCH;};
           /2f/ && do {$styling = "B"; last SWITCH;};

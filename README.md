@@ -17,7 +17,7 @@ yyC2Swp uses Courier New as the target font for generated subtitles, so proper d
 # Usage
 
 ```
-perl yyC2Swp.pl [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-lDeutsch] [-lDE] infile.scc [outfile.ass]
+perl yyC2Swp.pl [-cCC3] [-a] [-o01:00:00:00] [-td] infile.scc [outfile.ass]
 ```
 -c (OPTIONAL): Channel to convert to subtitle. SCC input only. (CC1 default, CC2, CC3, CC4, T1, T2, T3 and T4 are other choices)
 
@@ -31,29 +31,17 @@ perl yyC2Swp.pl [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-lDeutsch] [
 
 -t (OPTIONAL; automatically sets fps to 29.97): NTSC timebase: d (dropframe) or n (non-dropframe) (DEFAULT: n)
 
--x (OPTIONAL): Horizontal resolution for converted subtitles. Not used by E608, G608, SMPTE-TT, TTML, or VTT. (DEFAULT: 720 for STL, 640 for others)
-
--y (OPTIONAL): Vertical resolution for converted subtitles. Not used by E608, G608, SMPTE-TT, TTML, or VTT. (DEFAULT: 480)
-
--xr (OPTIONAL): Portion of the width of the video to display subtitles in. A value of 8/10 would position subtitles within the center 80% of the video width and leave a "safe zone" of 10% on the left and right. Can be specified as a ratio (4:5) or a fraction (3/4). Negative values will be interpreted the same as 1:1, i.e. 100%. (DEFAULT: 2/3)
-
--yr (OPTIONAL): Portion of the height of the video to display subtitles in. A value of 8/10 would position subtitles within the center 80% of the video height and leave a "safe zone" of 10% on the top and bottom. Can be specified as a ratio (7:8) or a fraction (4/5). Negative values will be interpreted the same as 1:1, i.e. 100%. (DEFAULT: 13/16)
-
--l (OPTIONAL): Language or Language Code for subtitles. Two character values will be stored as the Language Code, longer will be stored as the Language. If only a Language is specified, the first two characters will become the Language Code. Only used by SAMI, SMPTE-TT, and TTML subtitles. (DEFAULT: English, EN)
-
-NOTE: outfile argument is optional (name.scc/g608/e608 -> name.ass). Format is controlled by outfile suffix: .ass Advanced SubStation (default), .ccd SCC Disassembly (SCC input only), .e608 Extended Grid 608, .g608 Grid 608, .qt.txt QuickTime Caption, .smi/.sami SAMI, .ssa SubStation Alpha, .stl Spruce Technologies Language, .ttml/.dfxp Timed Text Markup Language, .ttxt GPAC Timed Text, .vtt WebVTT, or .xml SMPTE-TT.
+NOTE: outfile argument is optional (name.scc/g608 -> name.ass). Format is controlled by outfile suffix: .ass Advanced SubStation (default), .ccd SCC Disassembly (SCC input only), .e608 Extended Grid 608, .g608 Grid 608, .qt.txt QuickTime Caption, .smi/.sami SAMI, .ssa SubStation Alpha, .stl Spruce Technologies Language, .ttml/.dfxp Timed Text Markup Language, .ttxt GPAC Timed Text, .vtt WebVTT, or .xml SMPTE-TT.
 
 # Notes
-Captions which contain styling options (e.g. color changes, background alpha) that are unsupported by the output format will be converted with those styles removed. A warning will be printed to the console for each caption that could not be converted with all styling intact.
+Captions are converted assuming a non-anamorphic 4:3 NTSC display resolution (640x480 in square pixels) and padded for overscan. I intend to add options for overriding the target resolution, aspect ratio, and overscan at a later date.
 
-Converted captions do not include the default black background for text, except for the SMPTE-TT format. Other background colors are preserved in formats with per-character background color support. Advanced SubStation currently will display these as changes to the text border color rather than a solid background color. An option to retain the default solid background will be added at a later date.
+Captions which contain styling options (e.g. color changes, background alpha) that are unsupported by the output format will be converted with those styles removed. A warning will be printed to the console for each caption that could not be converted with all styling intact.
 
 ## Known Issues
 yyC2Swp assumes input files are for CEA-608 captions. Conversion of files containing EIA-708 captions may produce inconsistent or inaccurate results. At a minimum subtitles will be placed incorrectly, if not partially or fully off the screen.
 
 Depending on the source media, certain SCC extraction tools (or versions of those tools) produce differences in formatting which this script is not (yet) capable of accounting for. These same tools usually support extraction to Grid 608 (G608) format and produce consistent results when outputting to that format. Grid 608 is also much easier to visually spot-check. If you are encountering undesired results when converting extracted SCC files you may want to extract to Grid 608 and convert from that instead. (Note that Grid 608 does not preserve background color, background alpha, or flashing text style effects)
-
-Full styling support is not yet implemented for some subtitle formats. Flashing text is not currently implemented for any subtitle format.
 
 ## Current conversion options
 **Advanced SubStation (ASS)** produces the most consistent output for commonly used players and decoding libraries (VLC, MPC, MPV, Jellyfin, FFMPEG). It supports all CEA-608 features other than flashing text, and scales properly regardless of differences in resolution and/or aspect ratio between subtitle specifications and the actual media it is used with. Overall it is the most compatible yet accurate format for non-commercial/non-professional use, thus why it is the default.
@@ -62,7 +50,7 @@ Full styling support is not yet implemented for some subtitle formats. Flashing 
 
 **Timed Text Markup Language (TTML/DFXP)** is unsupported by most players (MPC, MPV) and imperfectly supported by others (VLC supports almost all effects but has issues maintaining consistent line spacing). However, it is one of the most accurate human-readable conversion formats available for CEA-608 captions, particularly in terms of positioning and font sizing since it uses an almost identical grid-based text sizing and positioning system by default. It is the format with the best overall support and accuracy among web-based players and professional authoring software.
 
-**SMPTE-TT (XML)** is an extension of TTML designed to retain all CEA-608 content, styling, and appearance (e.g. program information, the solid color background behind text), and is one of the formats recommended for Closed Caption/CEA-608 preservation by PBS. SMPTE-TT is designed to be somehow even more accurate than TTML, albeit mostly in ways that are only relevant to broadcast, commercial, or other professional considerations. Due to the high accuracy of content preservation its file sizes are almost always larger than TTML. Support is for the most part the same as TTML, and most compatible software players will not show any significantly different output than standard TTML, other than the font (which is simply set to "monospace" for compatibility reasons) and displaying a black background behind most text. Storage of extended data (XDS) - like program information and rating - is supported by the format but not yet implemented by yyC2Swp. The format is best used for archival or professional purposes.
+**SMPTE-TT (XML)** is an extension of TTML designed to retain all CEA-608 content, styling, and appearance (e.g. program information, the solid color background behind text), and is one of the formats recommended for Closed Caption/CEA-608 preservation by PBS. SMPTE-TT is designed to be somehow even more accurate than TTML, albeit mostly in ways that are only relevant to broadcast, commercial, or other professional considerations. Due to the high accuracy of content preservation its file sizes are almost always larger than TTML. Support is for the most part the same as TTML, and most compatible software players will not show any significantly different output than standard TTML, other than the font (which is simply set to "monospace" for compatibility reasons) and displaying a black background behind most text. The format is best used for archival or professional purposes.
 
 **WebVTT (VTT)** output is very accurate for web-based players, but advanced styling support is sparse for most software (e.g. VLC does not process left/right positioning, MPV and MPC do not process positioning at all). Despite that nearly all modern players, libraries, and authoring software have basic support for WebVTT and will display text, italic/underline, and color effects correctly, effectively treating them as SubRip (SRT) subtitles. WebVTT is a preferred subtitle upload format for many video hosting platforms (e.g. YouTube), though some of those platforms also support SCC files directly (e.g. also YouTube).
 
@@ -87,7 +75,9 @@ Thanks also to bbgdzxng1 for sharing the lost version 3.8 of CCASDI.
 
 # Changelog
 
-1.0 Add Grid 608 (G608) and Extended Grid 608 (E608) output. Extended Grid 608 is similar to Grid 608, but with an additional 32x15 block for indicating background color and alpha. The format also notes the Flashing Text tag (F) in the styling block (the B, I, R, U characters). The format may be expanded further at a later date, e.g. to add notation for roll-up or paint-on caption effects. Fix some issues with STL output that caused incorrect rendering when imported into DVD Studio Pro 4, and alter output to change horizontal alignment as needed to better preserve positioning. Correct SCC decoding of certain text styling flags (like flashing). Correct a bug which left trailing newlines on some subtitles. Modify headers in TTML/SMPTE-TT and SSA/ASS to follow compatibility and best practices recommendations for those formats. Add support for semi-transparent background colors to WebVTT. Add command line options for resolution, language, and display/safe area.
+1.0.1 Fix error with some variable names (double use of $) which caused crashes when converting some SCC files.
+
+1.0 Add Grid 608 (G608) and Extended Grid 608 (E608) output. Extended Grid 608 is similar to Grid 608, but with an additional 32x15 block for indicating background color and alpha. The format also notes the Flashing Text tag (F) in the styling block (the B, I, R, U characters). The format may be expanded further at a later date, e.g. to add notation for roll-up or paint-on caption effects. Fix some issues with STL output that caused incorrect rendering when imported into DVD Studio Pro 4, and alter output to change horizontal alignment as needed to better preserve positioning. Correct SCC decoding of certain text styling flags (like flashing). Correct a bug which left trailing newlines on some subtitles. Modify headers in TTML/SMPTE-TT and SSA/ASS to follow compatibility and best practices recommendations for those formats. Add support for semi-transparent background colors to WebVTT.
 
 0.9 Add Spruce Technologies Language (STL) support (not to be confused with EBU-STL). Only supports positioning and basic styling (italic/underline) since color effects must be applied to the entire subtitle. Modify QT.TXT, SAMI, and TTXT output to omit screen blanking commands (end of subtitle) when the next subtitle starts within 0.5 seconds of the end of the last. Add "null-stuffing" (blank sub at frame 0) to those same formats. Modify SMPTE-TT header generation to properly note source caption channel (when specified) per SMPTE-TT spec. Further refinements to SAMI output to maximize compatibility with modern players and libraries (mostly FFMPEG). Add background color support to QuickTime Caption.
 
