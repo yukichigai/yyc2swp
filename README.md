@@ -17,8 +17,10 @@ yyC2Swp uses Courier New as the target font for generated subtitles, so proper d
 # Usage
 
 ```
-perl yyC2Swp.pl [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-lDeutsch] [-lDE] infile.scc [outfile.ass]
+perl yyC2Swp.pl [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-lDeutsch] [-lDE] infile.scc [outfile.ass]
 ```
+-ec (OPTIONAL): Correct errors in input files when possible, rather than halting conversion entirely. Errors will still be written to console. (DEFAULT: off)
+
 -c (OPTIONAL): Channel to convert to subtitle. SCC input only. (CC1 default, CC2, CC3, CC4, T1, T2, T3 and T4 are other choices)
 
 -r (OPTIONAL): Output roll-up subtitles in roll-up format, instead of one line at a time
@@ -58,7 +60,7 @@ Full styling support is not yet implemented for some subtitle formats. Flashing 
 ## Current conversion options
 **Advanced SubStation (ASS)** produces the most consistent output for commonly used players and decoding libraries (VLC, MPC, MPV, Jellyfin, FFMPEG). It supports all CEA-608 features other than flashing text, and scales properly regardless of differences in resolution and/or aspect ratio between subtitle specifications and the actual media it is used with. Overall it is the most compatible yet accurate format for non-commercial/non-professional use, thus why it is the default.
 
-**SubStation Alpha (SSA)** output is just as accurate as Advanced SubStation for positioning and text color, but does not support background color and alpha effects (which are rarely used). SSA also *technically* does not support underlined text, though most players will render it regardless. Generally most players that support SSA will also support ASS, and there are no inherent technical advantages to SSA over ASS. The format should only be used for specific situations where Advanced SubStation is not supported... or if your captions have very little styling and you don't want them showing up as "ASS".
+**SubStation Alpha (SSA)** output is just as accurate as Advanced SubStation for positioning and text color, but does not support background color and alpha effects (which are rarely used). SSA also *technically* does not support underlined text, though most players will render it regardless. Generally most players that support SSA will also support ASS, and there are no inherent technical advantages to SSA over ASS. That said, captions converted to SubStation Alpha are positioned by adjusting margins rather than using Advanced SubStation's "pos" tag, which can produce more (or less) desirable results with certain software. The format should only be used for specific situations where Advanced SubStation will not do the job... or if your captions have very little styling and you don't want them showing up as "ASS".
 
 **Timed Text Markup Language (TTML/DFXP)** is unsupported by most players (MPC, MPV) and imperfectly supported by others (VLC supports almost all effects but has issues maintaining consistent line spacing). However, it is one of the most accurate human-readable conversion formats available for CEA-608 captions, particularly in terms of positioning and font sizing since it uses an almost identical grid-based text sizing and positioning system by default. It is the format with the best overall support and accuracy among web-based players and professional authoring software.
 

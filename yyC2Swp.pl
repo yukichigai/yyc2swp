@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "1.0.1";
+my $Version = "1.1";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -154,6 +154,13 @@ my $Version = "1.0.1";
 #   Add command line option to override Language and Language Code variables. Add
 #   command line option to override display/"safe" display area for X and Y.
 # 1.0.1 Fix error with misnamed "$$styling" variable references
+# 1.0.2 Fix issues with comparison operators, also byte comparisons. Change logic for
+#   stripping trailing tags on ASS and SSA lines
+# 1.1 Modify SCC parsing to account for blank lines that have more than just a newline
+#   to ensure default channel detection functions correctly. Also change SCC parsing
+#   to account for byte pairs sperated by multiple spaces. Add parsing of Flashing
+#   Text Tag to SCC decoding (whoops). Add Error Correction command line option to
+#   correct or ignore errors in input files and continue processing when possible.
 sub usage;
 sub frame;
 sub timecodeof;
@@ -204,6 +211,8 @@ my $lastvar3 = 0; # Generic "value from last subtitle" storage variable
 
 my $e608Cols = 32; # Number of columns we output/input for e608 (configurable)
 my $e608Rows = 15; # Number of rows we output/input for e608 (configurable)
+
+my $errorCorrection = 0; # Do we try to automatically correct errors?
 
 # process command line arguments
 while ($_ = shift) {
@@ -283,6 +292,10 @@ while ($_ = shift) {
     }
     next;
   }
+  if(s/-ec//){
+    $errorCorrection = 1;
+    next;
+  }
   if ($input =~ m\~\) {
     $input = $_;
     next;
@@ -342,7 +355,7 @@ if ($convertModeChannel eq "T4") {
   $convertMode = "TX";
   $ok = 1;
 }
-if ($ok eq 0) {
+if ($ok == 0) {
   usage();
   die "Channel to convert must be CC1 - CC4 or T1 - T4, stopped";
 }
@@ -352,7 +365,7 @@ if ($input eq "~") {
   die "No input file, stopped";
 }
 
-my $assemble = -1; # 1 to assemble, 0 to disassemble, 2 for Grid 608
+my $assemble = -1; # 1 to assemble, 0 to disassemble, 2 for Grid 608, 3 for Extended Grid 608
 my $suffix = ".ass"; # Default to Advanced SubStation
 if ($output eq "~") {
   if ($input =~ m/(.*)(\.scc)$/i) {
@@ -463,7 +476,7 @@ my @words;
 my $hi;
 my $lo;
 my $skip;
-if ($assemble eq 1) {
+if ($assemble == 1) {
   $line = <RH>;
   chomp $line;
   (my $channelcommand, $channel) = split(/ /, $line);
@@ -473,15 +486,19 @@ if ($assemble eq 1) {
     $channel = -1;
   }
   if (($channel < 1) or ($channel > 4)) {
-    die "CHANNEL set incorrectly, stopped";
+    if($errorCorrection){
+      print "CHANNEL set incorrectly, defaulting to 1.\n";
+      $channel = 1;
+    } else {
+      die "CHANNEL set incorrectly, stopped";
+    }
   }
-} elsif($assemble eq 0) {
-  $channel = 1; # can be 1 - 4
-  do {
+} elsif($assemble == 0) {
+  do { # Go until we find a non-blank line
     $line = <RH>;
-  } until $line ne "\n";
+  } until (!($line =~ m/^\s+$/)); #$line ne "\n";
   chomp $line;
-  ($timecode, @words) = split(/\s/, $line);
+  ($timecode, @words) = split(/\s+/, $line);
   $words[0] =~ m/(..)(..)/;
   $hi = $1;
   # first word in file will be start caption command, in which case
@@ -507,7 +524,7 @@ if ($assemble eq 1) {
   $skip = <RH>;
   $skip = <RH>;
 }
-elsif ($assemble eq 2 or $assemble eq 3){
+elsif ($assemble == 2 or $assemble == 3){
 # Y|y - Go back to the beginning of the file
   seek (RH, 0, 0);
 }
@@ -542,7 +559,7 @@ my $startTime = ""; # start time of subtitle
 my $endTime = ""; # end time of subtitle
 my $subtitle = ""; # converted subtitle
 my $subtitleNumber = 0; # counter used by... well, nothing we output to, but it helps us track subtitles all the same
-# for interrupted/continued XDS sequences
+# for interrupted/continued XDS sequence  $channel = 1; # can be 1 - 4s
 my %XDSPosition = ( 'ST' => 0, 'PL' => 0, 'PN' => 0, 'PT' => 0, 'PR' => 0,
                     'AS' => 0, 'CS' => 0, 'CG' => 0, 'AR' => 0, 'PD' => 0,
                     'MD' => 0, 'D1' => 0, 'D2' => 0, 'D3' => 0, 'D4' => 0,
@@ -602,7 +619,7 @@ LINELOOP: while (<RH>) {
     }
     next LINELOOP;
   }
-  if ($assemble eq 1) {
+  if ($assemble == 1) {
     chomp;
     # Assemble line
     m/(\S+)(\s)(.+)/; # split into timecode and rest of line
@@ -646,6 +663,9 @@ LINELOOP: while (<RH>) {
         $isword = 1;
         $iscommand = 0;
       }
+      if ($string eq "~"){ # We only get this if there was an error processing the commmand but we have error correction on
+        next CHARLOOP;
+      }
       if (not ($iscommand) and ($char ne "}")) {
         $string = asChar($char);
         $isword = 0;
@@ -681,10 +701,10 @@ LINELOOP: while (<RH>) {
       $frames = 0;
     }
     $timecode = timecodeof($frames);
-  } elsif ($assemble eq 0) {
+  } elsif ($assemble == 0) {
     chomp;
     # Disassemble line
-    ($timecode, @words) = split(/\s/, $_);
+    ($timecode, @words) = split(/\s+/, $_);
     # catch blank lines
     if ($timecode eq "") {
       next LINELOOP;
@@ -729,6 +749,9 @@ LINELOOP: while (<RH>) {
     }
     WORDLOOP: foreach $word (@words) {
       $numwords = $numwords + 1;
+      if($word =~ m/^\s*$/){ # Skip blanks
+        next WORDLOOP;
+      }
       if (length($word) != 4) {
         $outline =~ m/^( )(.+)/;
         $outline = $2;
@@ -738,7 +761,12 @@ LINELOOP: while (<RH>) {
             print WH "\n";
           }
         }
-        die "Incorrect word length for word $numwords, timecode $timecode, stopped";
+        if($errorCorrection){
+          print "Incorrect word length for word $numwords ($word), timecode $timecode. Skipping to next word.";
+          next WORDLOOP;
+        } else {
+          die "Incorrect word length for word $numwords ($word), timecode $timecode, stopped";
+        }
       }
       $word =~ m/(..)(..)/;
       $hi = hex $1;
@@ -828,7 +856,7 @@ LINELOOP: while (<RH>) {
     $timecode = timecodeof($frames);
   }
   # Y|y - Grid 608 processing
-  elsif ($assemble eq 2) {
+  elsif ($assemble == 2) {
     # Check if the whole line is an integer, i.e. the subtitle number, which we really don't need except for debugging
     if ($_ =~ m/^([0-9]+)\s*$/){
       $subtitleNumber = int($1)-1;
@@ -841,7 +869,11 @@ LINELOOP: while (<RH>) {
       $endTime = $3.":".($4*$fps)/1000;
     }
     # Caption lines will have 32 characters of text, 0-1 null char, then 32 characters of numbers and 32 characters of B, I, R, or U
-    elsif($_ =~ m/^(.{32})\x00?([0-9]{32})([BIRU]{32})\s*$/){
+    elsif($_ =~ m/^(.{32})\x00?([0-9]{32})([BIRU]{32})\s*$/ or ($errorCorrection == 1 and $_ =~ m/^(.{32})\x00?(.{32})(.{32})\s*$/)){
+      # If we're allowing malformed rows, note what's malformed.
+      if(!($_ =~ m/^(.{32})\x00?([0-9]{32})([BIRU]{32})\s*$/)){
+        print "Warning: Invalid style or color characters in line $row of subtitle $subtitleNumber. Output may differ from expected result.\n";
+      }
       # per G608 spec there should be 3 sets of 32 characters, but some versions add a null character at position 32
       # don't process rows we can immediately consider blank: all 9s in the color definition, all whitespace in the character list
       if(!($_ =~ m/^\s{32}\x00?9{32}/)){
@@ -864,7 +896,7 @@ LINELOOP: while (<RH>) {
     }
   }
   # Extended Grid 608 processing, which is like Grid 608 but... extended....
-  elsif ($assemble eq 3) {
+  elsif ($assemble == 3) {
     # Check if the whole line is an integer, i.e. the subtitle number, which we really don't need except for debugging
     if ($_ =~ m/^([0-9]+)\s*$/){
       $subtitleNumber = int($1)-1;
@@ -881,7 +913,10 @@ LINELOOP: while (<RH>) {
       # POSSIBLE TO DO: $5 contains all the post-timecode parameters (rollup/painton modes perhaps?)
     }
     # Caption lines will have 32-ish characters of text, 32-ish characters of numbers, 32-ish characters of B, F, I, R, or U, then 32-ish characters of background color/alpha
-    elsif($_ =~ m/^(.{$e608Cols})([0-9]{$e608Cols})([BFIRU]{$e608Cols})([TBbWwRrGgUuYyMmCc]{$e608Cols})\s*$/){
+    elsif($_ =~ m/^(.{$e608Cols})([0-9]{$e608Cols})([BFIRU]{$e608Cols})([TBbWwRrGgUuYyMmCc]{$e608Cols})\s*$/ or ($errorCorrection == 1 and $_ =~ m/^(.{$e608Cols})(.{$e608Cols})(.{$e608Cols})(.{$e608Cols})\s*$/)){
+       if(!($_ =~ m/^(.{$e608Cols})([0-9]{$e608Cols})([BFIRU]{$e608Cols})([TBbWwRrGgUuYyMmCc]{$e608Cols})\s*$/)){
+        print "Warning: Invalid style, color, or background characters in line $row of subtitle $subtitleNumber. Output may differ from expected result.\n";
+      }
       # don't process rows we can immediately consider blank: all 9s in the color definition, all whitespace in the character list
       if(!($_ =~ m/^\s{$e608Cols}9{$e608Cols}/)){
         for(my $_x = 0; $_x < $e608Cols; $_x++){
@@ -941,14 +976,16 @@ sub usage {
   print "  Converts Scenarist Closed Captions or Grid 608 files to subtitles while\n";
   print "    preserving positioning information. Also converts to SCC Dissasembly.\n";
   print "  Based on CCASDI by McPoodle.\n";
-  print "  Syntax: yyC2Swp [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576]\n";
+  print "  Syntax: yyC2Swp [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576]\n";
   print "                  [-xr4:5] [-yr4/5] [-lDeutsch] [-lDE] infile.scc [outfile.ass]\n";
+  print "    -ec (OPTIONAL): Correct errors in input files when possible, rather than halting\n";
+  print "         conversion entirely. Errors will still be written to console. (DEFAULT: off)\n";
   print "    -c (OPTIONAL; SCC only): Channel to convert to subtitle.\n";
   print "         (CC1 default, CC2, CC3, CC4, T1, T2, T3 and T4 are other choices)\n";
   print "    -r (OPTIONAL): Output roll-up subtitles in roll-up format, instead of\n";
   print "         one line at a time\n";
-  print "    -a (OPTIONAL): Adjust timecodes to be start time for SCC\n";
-  print "         and display time for dissassembly\n";
+  print "    -a (OPTIONAL): Adjust timecodes to be start time for SCC and display time\n";
+  print "         for dissassembly\n";
   print "    -o (OPTIONAL): Offset to apply to timecodes, in HH:MM:SS:FF format\n";
   print "         (DEFAULT: 00:00:00:00, negative values are permitted)\n";
   print "    -f (OPTIONAL): Number of frames per second (range 12 - 60) (DEFAULT: 29.97)\n";
@@ -963,9 +1000,9 @@ sub usage {
   print "    -yr (OPTIONAL): Portion of the height of the video to display subtitles in.\n";
   print "         Can be specified as a ratio (7:8) or a fraction (4/5). (DEFAULT: 13/16)\n";
   print "    -l (OPTIONAL): Language or Language Code for subtitles. Two character values will\n";
-  print "         be stored as the Language Code, longer will be stored as the Language. If only\n";
-  print "         a Language is specified, the first two characters will become the Language Code.\n";
-  print "         Only used by SAMI, SMPTE-TT, and TTML subtitles. (DEFAULT: English, EN)\n";
+  print "         be stored as the Language Code, longer will be stored as the Language. If\n";
+  print "         only a Language is specified, the first two characters will become the\n";
+  print "         Langauge Code. Only SAMI, SMPTE-TT, and TTML subtitles. (DEFAULT: English, EN)\n";
   print "  NOTE: outfile argument is optional (name.scc/g608/e608 -> name.ass). Format is\n";
   print "    controlled by outfile suffix: .ass Advanced SubStation (default),\n";
   print "    .ccd SCC Disassembly (SCC input only), .e608 Extended Grid 608, .g608 Grid 608,\n";
@@ -1910,7 +1947,7 @@ sub outputSubtitle {
           $lastvar3 = "Right";
           print WH "\$HorzAlign = ".$lastvar3."\n";
         }
-        if($lastvar1 ne int(((32-$endx)/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5)*-1){
+        if($lastvar1 != int(((32-$endx)/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5)*-1){
           $lastvar1 = int(((32-$endx)/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5)*-1;
           print WH "\$Xoffset =".$lastvar1."\n";
         }
@@ -1919,7 +1956,7 @@ sub outputSubtitle {
           $lastvar3 = "Left";
           print WH "\$HorzAlign = ".$lastvar3."\n";
         }
-        if($lastvar1 ne int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5)){
+        if($lastvar1 != int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5)){
           $lastvar1 = int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)-($ResX/10)+0.5);
           print WH "\$Xoffset =".$lastvar1."\n";
         }
@@ -1928,12 +1965,12 @@ sub outputSubtitle {
           $lastvar3 = "Center";
           print WH "\$HorzAlign = ".$lastvar3."\n";
         }
-        if($lastvar1 ne int((((($startx+$endx)/64*$ResX)-($ResX/2))*$Xratio)+0.5)){
+        if($lastvar1 != int((((($startx+$endx)/64*$ResX)-($ResX/2))*$Xratio)+0.5)){
           $lastvar1 = int((((($startx+$endx)/64*$ResX)-($ResX/2))*$Xratio)+0.5);
           print WH "\$Xoffset =".$lastvar1."\n";
         }
       }
-      if($lastvar2 ne int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)-($ResY/10)+0.5)){
+      if($lastvar2 != int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)-($ResY/10)+0.5)){
         $lastvar2 = int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)-($ResY/10)+0.5);
         print WH "\$Yoffset =".$lastvar2."\n";
       }
@@ -2065,7 +2102,7 @@ sub outputSubtitle {
       $subtitle =~ s|\xa0|\\h|g; # Convert NBSP to \h
       $subtitle =~ s|\n|\\N|g; # convert newlines to "\N" string
       # Strip any "close" tags that are at the end of the subtitle, since they aren't needed in SubStation formatting
-      $subtitle =~ s|({\\[iu]0})*({\\c&H.{6}&})*$||;
+      while($subtitle =~ s/{\\[iu]0}$|{\\c&H.{6}&}$//){};
       # And now some positioning trickery. First, calculate the expected left and right margins
       my $Lmargin = int(($startx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5);
       my $Rmargin = ($ResX - int(($endx/32*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5));
@@ -2096,7 +2133,7 @@ sub outputSubtitle {
       # subtitle manipulation
       $subtitle =~ s|\n|\\N|g; # convert newlines to "\N" string
       # Strip any "close" tags that are at the end of the subtitle, since they aren't needed in SubStation formatting
-      $subtitle =~ s|({\\[iu]0})*({\\c3?&H.{6}&})*({\\a3&H.{2}&})*$||;
+      while($subtitle =~ s/{\\[iu]0}$|{\\c3?&H.{6}&}$|{\\a3&H.{2}&}$//){};
       # output subtitle. Unlike SSA we can just use the "pos" tag override to set the position directly, no funky margin trickery needed.
       print WH "Dialogue: 0,".$tc1.",".$tc2.",*Default,,0000,0000,0000,,{\\pos(".int((($startx+$endx)/64*($ResX*$Xratio))+($ResX*(1-$Xratio)/2)+0.5).",".int(($starty/15*($ResY*$Yratio))+($ResY*(1-$Yratio)/2)+0.5).")}".$subtitle."\n";
     }
@@ -2132,7 +2169,7 @@ sub outputFooter {
   }
   if ($convertFormat eq "SAMI") {
     # close out the last subtitle
-    print WH "<SYNC start=\"".sprintf("%d", (frame($lastvar1) / $fps * 1000) + 0.5)."\"><P CLASS=\"".uc($Language)."\">&nbsp;</P></SYNC>\n\n";
+    print WH "<SYNC start=\"".sprintf("%d", (frame($lastvar1) / $fps * 1000) + 0.5)."\"><P CLASS=\"".uc($LangCode)."CC\">&nbsp;</P></SYNC>\n\n";
     print WH "</BODY>\n</SAMI>\n";
   }
   elsif ($convertFormat eq "Timed Text Markup Language" or $convertFormat eq "SMPTE-TT") {
@@ -2170,28 +2207,25 @@ sub disCommand {
     if ($hi eq "1d") { $hi = "15"; }
     if ($hi eq "1e") { $hi = "16"; }
     if ($hi eq "1f") { $hi = "17"; }
-    # Y|y - this one is a weird outlier so just check it directly
-    if (($hi eq "97" or $hi eq "1f") and $lo eq "ad"){$bgcolor = "T"; $extendedChar = 1;}
     SWITCH: for ($hi) {
       /10/ && do {
         for ($lo) {
       	  # Y|y - Add support for background color/alpha tags. Format is CAPS = solid color, lower = semi-transparent color
-      	  # TO DO: Do we need to repeat this for $hi = 98?
           /20/ && do {$bgcolor = "W"; $extendedChar = 1; last SWITCH;};
-          /a1/ && do {$bgcolor = "w"; $extendedChar = 1; last SWITCH;};
-          /a2/ && do {$bgcolor = "G"; $extendedChar = 1; last SWITCH;};
+          /21/ && do {$bgcolor = "w"; $extendedChar = 1; last SWITCH;};
+          /22/ && do {$bgcolor = "G"; $extendedChar = 1; last SWITCH;};
           /23/ && do {$bgcolor = "g"; $extendedChar = 1; last SWITCH;};
-          /a4/ && do {$bgcolor = "U"; $extendedChar = 1; last SWITCH;}; # Yeah I play MTG a bit
+          /24/ && do {$bgcolor = "U"; $extendedChar = 1; last SWITCH;}; # Yeah I play MTG a bit
           /25/ && do {$bgcolor = "u"; $extendedChar = 1; last SWITCH;};
           /26/ && do {$bgcolor = "C"; $extendedChar = 1; last SWITCH;};
-          /a7/ && do {$bgcolor = "c"; $extendedChar = 1; last SWITCH;};
-          /a8/ && do {$bgcolor = "R"; $extendedChar = 1; last SWITCH;};
+          /27/ && do {$bgcolor = "c"; $extendedChar = 1; last SWITCH;};
+          /28/ && do {$bgcolor = "R"; $extendedChar = 1; last SWITCH;};
           /29/ && do {$bgcolor = "r"; $extendedChar = 1; last SWITCH;};
           /2a/ && do {$bgcolor = "Y"; $extendedChar = 1; last SWITCH;};
-          /ab/ && do {$bgcolor = "y"; $extendedChar = 1; last SWITCH;};
+          /2b/ && do {$bgcolor = "y"; $extendedChar = 1; last SWITCH;};
           /2c/ && do {$bgcolor = "M"; $extendedChar = 1; last SWITCH;};
-          /ad/ && do {$bgcolor = "m"; $extendedChar = 1; last SWITCH;};
-          /ae/ && do {$bgcolor = "B"; $extendedChar = 1; last SWITCH;};
+          /2d/ && do {$bgcolor = "m"; $extendedChar = 1; last SWITCH;};
+          /2e/ && do {$bgcolor = "B"; $extendedChar = 1; last SWITCH;};
           /2f/ && do {$bgcolor = "b"; $extendedChar = 1; last SWITCH;};
           
           /40/ && do {$row = 11; $col = 0; $ruBottom = 11; $color = "0";
@@ -2590,8 +2624,6 @@ sub disCommand {
       };
       /13/ && do {
         for ($lo) {
-          /ad/ && do {$commandtoken = "_"; $extendedChar = 1; last SWITCH;}; # Low Line
-          /ae/ && do {$commandtoken = "|"; $extendedChar = 1; last SWITCH;}; # Broken Bar
           /20/ && do {$commandtoken = "Ã"; $extendedChar = 1; last SWITCH;};
           /21/ && do {$commandtoken = "ã"; $extendedChar = 1; last SWITCH;};
           /22/ && do {$commandtoken = "Í"; $extendedChar = 1; last SWITCH;};
@@ -2605,8 +2637,8 @@ sub disCommand {
           /2a/ && do {$commandtoken = "}"; $extendedChar = 1; last SWITCH;};
           /2b/ && do {$commandtoken = "\\"; $extendedChar = 1; last SWITCH;};
           /2c/ && do {$commandtoken = "^"; $extendedChar = 1; last SWITCH;};
-          /2d/ && do {$commandtoken = "_"; $extendedChar = 1; last SWITCH;};
-          /2e/ && do {$commandtoken = "|"; $extendedChar = 1; last SWITCH;};
+          /2d/ && do {$commandtoken = "_"; $extendedChar = 1; last SWITCH;}; # Low Line
+          /2e/ && do {$commandtoken = "|"; $extendedChar = 1; last SWITCH;}; # Broken Bar
           /2f/ && do {$commandtoken = "~"; $extendedChar = 1; last SWITCH;};
           /30/ && do {$commandtoken = "Ä"; $extendedChar = 1; last SWITCH;};
           /31/ && do {$commandtoken = "ä"; $extendedChar = 1; last SWITCH;};
@@ -2816,6 +2848,7 @@ sub disCommand {
                       $row = $ruBottom;
                       $col = 0;
                       last SWITCH;}; # {RU4}
+          /28/ && do {$styling = "F"; $extendedChar = 1; last SWITCH;}; #{FON}
           /29/ && do {$mode = "CC"; $ruHeight = 0;
                       if ($ccMode ne "paint-on") {
                         $endTime = timecodeof($frames + $offset + $numwords);
@@ -3360,6 +3393,7 @@ sub disCommand {
           /21/ && do {$col += 1; last SWITCH;}; # {TO1}
           /22/ && do {$col += 2; last SWITCH;}; # {TO2}
           /23/ && do {$col += 3; last SWITCH;}; # {TO3}
+          /2d/ && do {$bgcolor = "T"; $extendedChar = 1; last SWITCH;};
           /2e/ && do {$color = "8"; $styling = "R"; last SWITCH;};
           /2f/ && do {$color = "8"; $styling = "U"; last SWITCH;};
           /40/ && do {$row = 9; $col = 0; $ruBottom = 9; $color = "0";
@@ -3866,14 +3900,14 @@ sub disCommand {
         /24/ && do {$commandtoken = "{DER}"; last SWITCH;};
         /25/ && do {$commandtoken = "{RU2}"; $mode = "CC"; last SWITCH;};
         /26/ && do {$commandtoken = "{RU3}"; $mode = "CC"; last SWITCH;};
-        /a7/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
-        /a8/ && do {$commandtoken = "{FON}"; last SWITCH;};
+        /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
+        /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
         /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
-        /ab/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
+        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
-        /ae/ && do {$commandtoken = "{ENM}"; last SWITCH;};
+        /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{EOC}"; last SWITCH;};
         /40/ && do {$commandtoken = "{14Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{14WhU}"; last SWITCH;};
@@ -3950,14 +3984,14 @@ sub disCommand {
         /24/ && do {$commandtoken = "{DER}"; last SWITCH;};
         /25/ && do {$commandtoken = "{RU2}"; $mode = "CC"; last SWITCH;};
         /26/ && do {$commandtoken = "{RU3}"; $mode = "CC"; last SWITCH;};
-        /a7/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
-        /a8/ && do {$commandtoken = "{FON}"; last SWITCH;};
+        /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
+        /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
         /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
-        /ab/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
+        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
-        /ae/ && do {$commandtoken = "{ENM}"; last SWITCH;};
+        /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{EOC}"; last SWITCH;};
         /40/ && do {$commandtoken = "{05Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{05WhU}"; last SWITCH;};
@@ -4533,15 +4567,15 @@ sub disCommand {
         /24/ && do {$commandtoken = "{DER}"; last SWITCH;};
         /25/ && do {$commandtoken = "{RU2}"; $mode = "CC"; last SWITCH;};
         /26/ && do {$commandtoken = "{RU3}"; $mode = "CC"; last SWITCH;};
-        /a7/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
-        /a8/ && do {$commandtoken = "{FON}"; last SWITCH;};
+        /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
+        /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
         # text channel 2 is reserved for ITV messages
         /2a/ && do {$commandtoken = "{TR}"; $mode = "ITV"; last SWITCH;};
-        /ab/ && do {$commandtoken = "{RTD}"; $mode = "ITV"; last SWITCH;};
+        /2b/ && do {$commandtoken = "{RTD}"; $mode = "ITV"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
-        /ae/ && do {$commandtoken = "{ENM}"; last SWITCH;};
+        /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{EOC}"; last SWITCH;};
         /40/ && do {$commandtoken = "{14Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{14WhU}"; last SWITCH;};
@@ -4618,14 +4652,14 @@ sub disCommand {
         /24/ && do {$commandtoken = "{DER}"; last SWITCH;};
         /25/ && do {$commandtoken = "{RU2}"; $mode = "CC"; last SWITCH;};
         /26/ && do {$commandtoken = "{RU3}"; $mode = "CC"; last SWITCH;};
-        /a7/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
-        /a8/ && do {$commandtoken = "{FON}"; last SWITCH;};
+        /27/ && do {$commandtoken = "{RU4}"; $mode = "CC"; last SWITCH;};
+        /28/ && do {$commandtoken = "{FON}"; last SWITCH;};
         /29/ && do {$commandtoken = "{RDC}"; $mode = "CC"; last SWITCH;};
         /2a/ && do {$commandtoken = "{TR}"; $mode = "TX"; last SWITCH;};
-        /ab/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
+        /2b/ && do {$commandtoken = "{RTD}"; $mode = "TX"; last SWITCH;};
         /2c/ && do {$commandtoken = "{EDM}"; last SWITCH;};
         /2d/ && do {$commandtoken = "{CR}"; last SWITCH;};
-        /ae/ && do {$commandtoken = "{ENM}"; last SWITCH;};
+        /2e/ && do {$commandtoken = "{ENM}"; last SWITCH;};
         /2f/ && do {$commandtoken = "{EOC}"; last SWITCH;};
         /40/ && do {$commandtoken = "{05Wh}"; last SWITCH;};
         /41/ && do {$commandtoken = "{05WhU}"; last SWITCH;};
@@ -6778,11 +6812,21 @@ sub asCommand {
     /^CSC$/ && do {$word = ($channel =~ /[13]/) ? "97a8" : "1fa8"; last SWITCH;};
     /^CSK$/ && do {$word = ($channel =~ /[13]/) ? "9729" : "1f29"; last SWITCH;};
     /^CGU$/ && do {$word = ($channel =~ /[13]/) ? "972a" : "1f2a"; last SWITCH;};
-    /^\?\?$/ && do {die "Unknown command {??} in line $. of $input, stopped";};
+    /^\?\?$/ && do {
+      if($errorCorrection){
+        last SWITCH;
+      } else {
+        die "Unknown command {??} in line $. of $input, stopped";
+      }
+    };
     /^$/ && do {$word = "8080"; last SWITCH;};
   }
   if ($word eq "~") {
-    die "Invalid command {".$command."} in line $. of $input, stopped";
+    if($errorCorrection){
+      print "Invalid command {".$command."} in line $. of $input, skipping.\n";
+    } else {
+      die "Invalid command {".$command."} in line $. of $input, stopped";
+    }
   }
   return $word;
 }
@@ -6811,7 +6855,12 @@ sub asXDS {
     /Us/ && do {$xdslist[0] = 0x0d; $typeDefined = 0; last SWITCH;}; # Undefined start
     /Uc/ && do {$xdslist[0] = 0x0e; $typeDefined = 0; last SWITCH;}; # Undefined continue
     # if none of the above, then there was a typo
-    die "Invalid class code ".$class.", stopped";
+    if($errorCorrection){
+      print "Invalid XDS class code ".$class.", skipping.\n";
+      return "~";
+    } else {
+      die "Invalid XDS class code ".$class.", stopped";
+    }
   }
   $position += 3;
   my $type = substr $line, $position, 2;
