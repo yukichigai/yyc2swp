@@ -89,6 +89,10 @@ Thanks also to bbgdzxng1 for sharing the lost version 3.8 of CCASDI.
 
 # Changelog
 
+1.1 Modify SCC parsing to account for blank lines that have more than just a newline to ensure default channel detection functions correctly. Also change SCC parsing to account for byte pairs sperated by multiple spaces. Add parsing of Flashing Text Tag to SCC decoding (whoops). Add Error Correction command line option to correct or ignore errors in input files and continue processing when possible.
+
+1.0.2 Adjustments to numeric versus string comparison operators. Change how trailing tags are stripped from ASS and SSA subtitles.
+
 1.0.1 Fix error with some variable names (double use of $) which caused crashes when converting some SCC files.
 
 1.0 Add Grid 608 (G608) and Extended Grid 608 (E608) output. Extended Grid 608 is similar to Grid 608, but with an additional 32x15 block for indicating background color and alpha. The format also notes the Flashing Text tag (F) in the styling block (the B, I, R, U characters). The format may be expanded further at a later date, e.g. to add notation for roll-up or paint-on caption effects. Fix some issues with STL output that caused incorrect rendering when imported into DVD Studio Pro 4, and alter output to change horizontal alignment as needed to better preserve positioning. Correct SCC decoding of certain text styling flags (like flashing). Correct a bug which left trailing newlines on some subtitles. Modify headers in TTML/SMPTE-TT and SSA/ASS to follow compatibility and best practices recommendations for those formats. Add support for semi-transparent background colors to WebVTT. Add command line options for resolution, language, and display/safe area.
