@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "1.1";
+my $Version = "1.2";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -161,6 +161,13 @@ my $Version = "1.1";
 #   to account for byte pairs sperated by multiple spaces. Add parsing of Flashing
 #   Text Tag to SCC decoding (whoops). Add Error Correction command line option to
 #   correct or ignore errors in input files and continue processing when possible.
+# 1.2 Add option to disable bold for generated subtitles. Add option to override font
+#   used for subtitles. Font designation must use _ instead of space due to parsing,
+#   e.g. Courier Prime would be specified with "-fnCourier_Prime". Fix an issue with
+#   TTML/SMPTE-TT generation which could cause an infinite loop when generating
+#   multi-line subtitles. Allow conversion to continue when detecting a negative time
+#   code in input file when the Error Correction option is enabled. Add option to
+#   override font size in generated subtitles (-fsXX, e.g. ""-fs32")
 sub usage;
 sub frame;
 sub timecodeof;
@@ -214,12 +221,30 @@ my $e608Rows = 15; # Number of rows we output/input for e608 (configurable)
 
 my $errorCorrection = 0; # Do we try to automatically correct errors?
 
+my $fontName = "Courier New"; # Font used for generated subtitles
+my $fontSize = 30; # Font size (in points)
+
+my $allbold = 1; # Are subtitles bolded by default?
+
 # process command line arguments
 while ($_ = shift) {
 #  print ($_, "\n");
   $anything = "";
   if (s/-o//) {
     $offsettimecode = $_;
+    next;
+  }
+  if(s/-nobold//){
+    $allbold = 0;
+    next;
+  }
+  if (s/-fn//){
+    $fontName = $_;
+    $fontName =~ s/_/ /g;
+    next;
+  }
+  if (s/-fs//){
+    $fontSize = $_;
     next;
   }
   if (s/-f//) {
@@ -977,7 +1002,8 @@ sub usage {
   print "    preserving positioning information. Also converts to SCC Dissasembly.\n";
   print "  Based on CCASDI by McPoodle.\n";
   print "  Syntax: yyC2Swp [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576]\n";
-  print "                  [-xr4:5] [-yr4/5] [-lDeutsch] [-lDE] infile.scc [outfile.ass]\n";
+  print "                  [-fs36] [-fnCourier_Prime] [-xr4:5] [-yr4/5] [-lDeutsch] [-lDE]\n";
+  print "                  infile.scc [outfile.ass]\n";
   print "    -ec (OPTIONAL): Correct errors in input files when possible, rather than halting\n";
   print "         conversion entirely. Errors will still be written to console. (DEFAULT: off)\n";
   print "    -c (OPTIONAL; SCC only): Channel to convert to subtitle.\n";
@@ -1003,6 +1029,13 @@ sub usage {
   print "         be stored as the Language Code, longer will be stored as the Language. If\n";
   print "         only a Language is specified, the first two characters will become the\n";
   print "         Langauge Code. Only SAMI, SMPTE-TT, and TTML subtitles. (DEFAULT: English, EN)\n";
+  print "    -fn (OPTIONAL): Font name to use in generated subtitles. Spaces in the name must\n";
+  print "         be replaced with underscore (_) e.g. \"Courier_Prime\" for Courier Prime.\n";
+  print "         Not used by E608, G608, and SMPTE-TT. (DEFAULT: Courier_New)\n";
+  print "    -fs (OPTIONAL): Font size to use in generated subtitles. Non-numeric values are\n";
+  print "         allowed but may produce undesired results. Value is in points (pt). Value\n";
+  print "         reduced to 80% for STL subtitles. Not used by E608, G608, SMPTE-TT, TTML.\n";
+  print "         (DEFAULT: 30)\n";
   print "  NOTE: outfile argument is optional (name.scc/g608/e608 -> name.ass). Format is\n";
   print "    controlled by outfile suffix: .ass Advanced SubStation (default),\n";
   print "    .ccd SCC Disassembly (SCC input only), .e608 Extended Grid 608, .g608 Grid 608,\n";
@@ -1054,7 +1087,11 @@ sub frame {
 sub timecodeof {
   my $frames = shift(@_);
   if ($frames < 0) {
-    die "Negative time code in line $. of $input, stopped";
+    if($errorCorrection == 1){
+      print "Warning: Negative time code in line $. of $input ($frames).\n";
+    } else {
+      die "Negative time code in line $. of $input, stopped";
+    }
   }
   # hours
   my $divisor = 3600 * $fps;
@@ -1658,7 +1695,11 @@ sub outputHeader {
   my $convertFormat = shift(@_);
   if ($convertFormat eq "WebVTT"){
     print WH "WEBVTT\n\n";
-    print WH "STYLE\n::cue {\n  font-family: Courier New, monospace;\n  font-weight: bold;\n  font-size: 30pt;\n}\n";
+    if($allbold){
+      print WH "STYLE\n::cue {\n  font-family: $fontName, monospace;\n  font-weight: bold;\n  font-size: ".$fontSize."pt;\n}\n";
+    } else {
+print WH "STYLE\n::cue {\n  font-family: $fontName, monospace;\n  font-size: ".$fontSize."pt;\n}\n";
+    }
     $input =~ m/.*\.(.*)$/; # Get the extension of the input file
     print TH "NOTE Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n\n";
   }
@@ -1694,7 +1735,11 @@ sub outputHeader {
       print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"monospace\" tts:fontSize=\"2c\"/>\n"; # SMPTE-TT does not use custom fonts for compatibility reasons
     } else {
       print WH "        </metadata>\n        <styling>\n";
-      print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"Courier New\" tts:fontSize=\"2c\" tts:fontWeight=\"bold\"/>\n";
+      if($allbold){
+        print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"$fontName\" tts:fontSize=\"2c\" tts:fontWeight=\"bold\"/>\n";
+      } else {
+        print WH "          <style xml:id=\"s1\" tts:textAlign=\"left\" tts:fontFamily=\"$fontName\" tts:fontSize=\"2c\"/>\n";
+      }
     }
     print WH "        </styling>\n        <layout>\n";
     print WH "          <region xml:id=\"pop1\" tts:zIndex=\"1\" tts:backgroundColor=\"transparent\"/>\n";
@@ -1709,8 +1754,13 @@ sub outputHeader {
     print WH "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<!-- Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork) -->\n<TextStream version=\"1.0\">\n";
     print WH "<TextStreamHeader width=\"".$ResX."\" height=\"".$ResY."\">\n";
     print WH "<TextSampleDescription horizontalJustification=\"left\" verticalJustification=\"top\" fillTextRegion=\"no\">\n";
-    print WH "<FontTable>\n<FontTableEntry fontName=\"Courier New\" fontID=\"0\"/>\n</FontTable>\n<TextBox top=\"0\" left=\"0\" bottom=\"".$ResX."\" right=\"".$ResY."\"/>\n";
-    print WH "<Style styles=\"Bold\" fontSize=\"30\" color=\"ff ff ff ff\"/>\n</TextSampleDescription>\n</TextStreamHeader>\n";
+    print WH "<FontTable>\n<FontTableEntry fontName=\"$fontName\" fontID=\"0\"/>\n</FontTable>\n<TextBox top=\"0\" left=\"0\" bottom=\"".$ResX."\" right=\"".$ResY."\"/>\n";
+    if($allbold){
+      print WH "<Style styles=\"Bold\" fontSize=\"$fontSize\" color=\"ff ff ff ff\"/>\n</TextSampleDescription>\n</TextStreamHeader>\n";
+    } else{
+      print WH "<Style fontSize=\"$fontSize\" color=\"ff ff ff ff\"/>\n</TextSampleDescription>\n</TextStreamHeader>\n";
+    }
+
     print WH "<TextSample sampleTime=\"00:00:00.000\" text=\"''\"/>\n\n"; # Blank line at the start so the stream can be detected immediately
     $lastvar1 = "00:00:00:00"; # For tracking last subtitle endtime
   }
@@ -1719,7 +1769,13 @@ sub outputHeader {
   elsif ($convertFormat eq "Spruce Technologies Language"){
     $input =~ m/.*\.(.*)$/;
     print WH "//Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n";
-    print WH "\$FontName = Courier New\n\$FontSize = 24\n\$HorzAlign = Center\n\$VertAlign = Top\n";
+    my $fontSizeAdjust = int($fontSize);
+    if($fontSizeAdjust <= 0){
+      $fontSizeAdjust = 24;
+    } else {
+      $fontSizeAdjust = int($fontSizeAdjust * 4 / 5);
+    }
+    print WH "\$FontName = $fontName\n\$FontSize = $fontSizeAdjust\n\$HorzAlign = Center\n\$VertAlign = Top\n";
     # Colors (default) are 0: black, 1: offblack, 2: white, 3: red, 4: gray, 5: silver, 6: aqua/cyan, 7: fuschia/magenta, 8: yellow, 9: navy, 10: green, 11: maroon, 12: teal, 13: purple, 14: olive, 15: white
     # These are different in DVD Studio Pro, where 3 is white. Sometimes.
     print WH "\$ColorIndex1 =3\n\$ColorIndex2 =4\n\$ColorIndex3 =1\n\$ColorIndex4 =0\n"; # C1 = outline, C2 = outer outline, C3 = text, C4 = background
@@ -1736,7 +1792,11 @@ sub outputHeader {
     print WH "<SAMIParam><!--\n  Metrics {time:ms;}\n  Spec {MSFT:1.0;} -->\n</SAMIParam>\n";
     print WH "<STYLE TYPE=\"text/css\">\n";
     print WH "<!--\n";
-    print WH "P {text-align: center; font-size: 30pt; font-family: Courier New; font-weight: bold; color: #ffffff;}\n";
+    if($allbold){
+      print WH "P {text-align: center; font-size: ".$fontSize."pt; font-family: $fontName; font-weight: bold; color: #ffffff;}\n";
+    } else {
+      print WH "P {text-align: center; font-size: ".$fontSize."pt; font-family: $fontName; color: #ffffff;}\n";
+    }
     print WH ".".uc($LangCode)."CC {Name:".$Language."; lang:".$LangCode."; SAMIType:CC;}\n";
     print WH "-->\n";
     print WH "</STYLE>\n";
@@ -1750,7 +1810,7 @@ sub outputHeader {
   # https://web.archive.org/web/20100103095852/http://www.apple.com/quicktime/tutorials/textdescriptors.html
   #  In case anyone is wondering where I pulled this arcane knowledge from
   if ($convertFormat eq "QuickTime Caption") {
-    print WH "{QTtext}{font:Courier New}{justify:center}{size:30}{backColor:0,0,0}{keyedText:on}{dropShadow:on}\n"; # keyedText removes the background on the text box
+    print WH "{QTtext}{font:$fontName}{justify:center}{size:$fontSize}{backColor:0,0,0}{keyedText:on}{dropShadow:on}\n"; # keyedText removes the background on the text box
     print WH "{textColor:65535,65535,65535}{textEncoding:256}{timescale:1000}{width:0}{height:0}\n"; # textEncoding:256 enables unicode
     print WH "[00:00:00.000] \n"; # Blank line at the start so the stream can be detected immediately
     $lastvar1 = "00:00:00:00"; # For tracking last subtitle endtime
@@ -1769,7 +1829,7 @@ sub outputHeader {
     print WH "\n";
     print WH "[V4 Styles]\n";
     print WH "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, TertiaryColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, AlphaLevel, Encoding\n";
-    print WH "Style: *Default,Courier New,30,&HFFFFFF,&H00FFFF,&H000000,&H000000,1,0,1,2,3,6,0,0,0,00,1\n";
+    print WH "Style: *Default,$fontName,$fontSize,&HFFFFFF,&H00FFFF,&H000000,&H000000,$allbold,0,1,2,3,6,0,0,0,00,1\n";
     print WH "\n";
     print WH "[Events]\n";
     print WH "Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
@@ -1789,7 +1849,7 @@ sub outputHeader {
     print WH "\n";
     print WH "[V4+ Styles]\n";
     print WH "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n";
-    print WH "Style: *Default,Courier New,30,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,3,8,0,0,0,1\n";
+    print WH "Style: *Default,$fontName,$fontSize,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,$allbold,0,0,0,100,100,0,0,1,2,3,8,0,0,0,1\n";
     print WH "\n";
     print WH "[Events]\n";
     print WH "Format: Layer, Start, End, Style, Actor, MarginL, MarginR, MarginV, Effect, Text\n";
@@ -1847,7 +1907,7 @@ sub outputSubtitle {
       my $yoffset = 0;
       my $regionnum = 1;
       # Parse the subtitle out into individual lines
-      while($subtitle =~ /(.*)\n/){
+      while($subtitle =~ s/(.*)\n//){
       	my $subsub = $1; # It's fun to say
       	my $xoffset = 0;
       	if(!($subsub =~ m/^\s*$/)){ # skip completely blank lines

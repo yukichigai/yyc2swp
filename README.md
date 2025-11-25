@@ -5,10 +5,10 @@ This is a command line Perl script which can convert Closed Captions (Scenarist 
 
 # Requirements
 
-yyC2Swp currently requires you have Perl installed on your system, what with it being an uncompiled Perl script and all. Your Perl installation must also support UTF-8 (if you somehow disabled that).
+For non-Windows OSes yyC2Swp currently requires you have Perl installed on your system, what with it being an uncompiled Perl script and all. Your Perl installation must also support UTF-8 (if you somehow disabled that).
 
 ## Windows
-yyC2Swp is tested on Windows using [Strawberry Perl](https://strawberryperl.com/). While most versions of Perl for Windows should work, Strawberry Perl will (mostly) ensure you're using the same environment I was during development.
+While there is a standalone executable version of yyC2Swp available, you may want to run the Perl script version directly, if for no reason other than it being a tenth the size of the EXE. yyC2Swp is tested on Windows using [Strawberry Perl](https://strawberryperl.com/). While most versions of Perl for Windows should work, Strawberry Perl will (mostly) ensure you're using the same environment I was during development.
 
 ## Linux
 
@@ -17,7 +17,7 @@ yyC2Swp uses Courier New as the target font for generated subtitles, so proper d
 # Usage
 
 ```
-perl yyC2Swp.pl [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-lDeutsch] [-lDE] infile.scc [outfile.ass]
+perl yyC2Swp.pl [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-fs36] [-fnCourier_Prime] [-lDeutsch] [-lDE] infile.scc [outfile.ass]
 ```
 -ec (OPTIONAL): Correct errors in input files when possible, rather than halting conversion entirely. Errors will still be written to console. (DEFAULT: off)
 
@@ -42,6 +42,10 @@ perl yyC2Swp.pl [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-lDeut
 -yr (OPTIONAL): Portion of the height of the video to display subtitles in. A value of 8/10 would position subtitles within the center 80% of the video height and leave a "safe zone" of 10% on the top and bottom. Can be specified as a ratio (7:8) or a fraction (4/5). Negative values will be interpreted the same as 1:1, i.e. 100%. (DEFAULT: 13/16)
 
 -l (OPTIONAL): Language or Language Code for subtitles. Two character values will be stored as the Language Code, longer will be stored as the Language. If only a Language is specified, the first two characters will become the Language Code. Only used by SAMI, SMPTE-TT, and TTML subtitles. (DEFAULT: English, EN)
+
+-fn (OPTIONAL): Font name to use in generated subtitles. Spaces in the name must be replaced with underscore (_) e.g. \"Courier_Prime\" for Courier Prime. Not used by E608, G608, and SMPTE-TT. (DEFAULT: Courier_New)
+
+-fs (OPTIONAL): Font size to use in generated subtitles. Non-numeric values are allowed but may produce undesired results. Value is in points (pt). Value reduced to 80% for STL subtitles. Not used by E608, G608, SMPTE-TT, TTML. (DEFAULT: 30)
 
 NOTE: outfile argument is optional (name.scc/g608/e608 -> name.ass). Format is controlled by outfile suffix: .ass Advanced SubStation (default), .ccd SCC Disassembly (SCC input only), .e608 Extended Grid 608, .g608 Grid 608, .qt.txt QuickTime Caption, .smi/.sami SAMI, .ssa SubStation Alpha, .stl Spruce Technologies Language, .ttml/.dfxp Timed Text Markup Language, .ttxt GPAC Timed Text, .vtt WebVTT, or .xml SMPTE-TT.
 
@@ -88,6 +92,8 @@ Thanks to Emulgator on Doom9 for their analysis of the output from the [Zilog z8
 Thanks also to bbgdzxng1 for sharing the lost version 3.8 of CCASDI.
 
 # Changelog
+
+1.2 Add option to disable bold for generated subtitles. Add option to override font used for subtitles. Font designation must use _ instead of space due to parsing, e.g. Courier Prime would be specified with "-fnCourier_Prime". Fix an issue with TTML/SMPTE-TT generation which could cause an infinite loop when generating multi-line subtitles. Allow conversion to continue when detecting a negative time code in input file when the Error Correction option is enabled. Add option to override font size in generated subtitles (-fsXX, e.g. ""-fs32")
 
 1.1 Modify SCC parsing to account for blank lines that have more than just a newline to ensure default channel detection functions correctly. Also change SCC parsing to account for byte pairs sperated by multiple spaces. Add parsing of Flashing Text Tag to SCC decoding (whoops). Add Error Correction command line option to correct or ignore errors in input files and continue processing when possible.
 
