@@ -17,7 +17,7 @@ yyC2Swp uses Courier New as the target font for generated subtitles, so proper d
 # Usage
 
 ```
-perl yyC2Swp.pl [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-fs36] [-fnCourier_Prime] [-lDeutsch] [-lDE] infile.scc [outfile.ass]
+perl yyC2Swp.pl [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-fs36] [-fnCourier_Prime] [-nobold] [-lDeutsch] [-lDE] infile.scc [outfile.ass]
 ```
 -ec (OPTIONAL): Correct errors in input files when possible, rather than halting conversion entirely. Errors will still be written to console. (DEFAULT: off)
 
@@ -46,6 +46,8 @@ perl yyC2Swp.pl [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-fs36]
 -fn (OPTIONAL): Font name to use in generated subtitles. Spaces in the name must be replaced with underscore (_) e.g. \"Courier_Prime\" for Courier Prime. Not used by E608, G608, and SMPTE-TT. (DEFAULT: Courier_New)
 
 -fs (OPTIONAL): Font size to use in generated subtitles. Non-numeric values are allowed but may produce undesired results. Value is in points (pt). Value reduced to 80% for STL subtitles. Not used by E608, G608, SMPTE-TT, TTML. (DEFAULT: 30)
+
+-nobold (OPTIONAL): Text in generated subtitles will normal font weight instead of bold. Not used by E608, G608, QuickTime, and STL. (DEFAULT: off/bold text enabled)
 
 NOTE: outfile argument is optional (name.scc/g608/e608 -> name.ass). Format is controlled by outfile suffix: .ass Advanced SubStation (default), .ccd SCC Disassembly (SCC input only), .e608 Extended Grid 608, .g608 Grid 608, .qt.txt QuickTime Caption, .smi/.sami SAMI, .ssa SubStation Alpha, .stl Spruce Technologies Language, .ttml/.dfxp Timed Text Markup Language, .ttxt GPAC Timed Text, .vtt WebVTT, or .xml SMPTE-TT.
 
