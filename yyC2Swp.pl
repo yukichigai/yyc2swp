@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "1.3";
+my $Version = "1.3.1";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -174,6 +174,8 @@ my $Version = "1.3";
 #   conversion to detect italic/underline changes that only cover spaces or non-
 #   printable characters. Remove warning when multiple captions which share the same
 #   timecode exactly are present, as this is normal in SCC output.
+# 1.3.1 Fix issue with option parsing which could cause errors when processing input
+#   files with dashes in the name.
 sub usage;
 sub frame;
 sub timecodeof;
@@ -234,31 +236,31 @@ my $allbold = 1; # Are subtitles bolded by default?
 
 # process command line arguments
 while ($_ = shift) {
-#  print ($_, "\n");
+  #print ($_, "\n");
   $anything = "";
-  if (s/-o//) {
+  if (s/^-o//) {
     $offsettimecode = $_;
     next;
   }
-  if(s/-nobold//){
+  if(s/^-nobold//){
     $allbold = 0;
     next;
   }
-  if (s/-fn//){
+  if (s/^-fn//){
     $fontName = $_;
     $fontName =~ s/_/ /g;
     next;
   }
-  if (s/-fs//){
+  if (s/^-fs//){
     $fontSize = $_;
     next;
   }
-  if (s/-f//) {
+  if (s/^-f//) {
     $fps = $_;
     $drop = 0;
     next;
   }
-  if (s/-t//) {
+  if (s/^-t//) {
     if (m/d/) { # NTSC drop frame
       $fps = 30;
       $drop = 1;
@@ -269,11 +271,11 @@ while ($_ = shift) {
     }
     next;
   }
-  if (s/-r//) {
+  if (s/^-r//) {
     $subRollupMode = 1;
     next;
   }
-  if (s/-a//) {
+  if (s/^-a//) {
     $adjust = 1;
     next;
   }
@@ -283,11 +285,11 @@ while ($_ = shift) {
 #    $adjust = 1;
 #    next;
 #  }
-  if (s/-c//) {
+  if (s/^-c//) {
     $convertModeChannel = $_;
     next;
   }
-  if(s/-xr//){
+  if(s/^-xr//){
     if(m|([0-9]+)[:/]([0-9]+)|){
       if(int($1) <= 0 or int($2) <= 0){
         $Xratio = 1;
@@ -297,7 +299,7 @@ while ($_ = shift) {
     }
     next;
   }
-  if(s/-yr//){
+  if(s/^-yr//){
     if(m|([0-9]+)[:/]([0-9]+)|){
       if(int($1) <= 0 or int($2) <= 0){
         $Yratio = 1;
@@ -307,15 +309,15 @@ while ($_ = shift) {
     }
     next;
   }
-  if(s/-x//) {
+  if(s/^-x//) {
     $ResX = int($_);
     next;
   }
-  if(s/-y//) {
+  if(s/^-y//) {
     $ResY = int($_);
     next;
   }
-  if(s/-l//) {
+  if(s/^-l//) {
     if(length($_) > 2){
       $Language = $_;
     } else {
@@ -323,7 +325,7 @@ while ($_ = shift) {
     }
     next;
   }
-  if(s/-ec//){
+  if(s/^-ec//){
     $errorCorrection = 1;
     next;
   }

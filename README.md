@@ -99,6 +99,8 @@ Thanks also to bbgdzxng1 for sharing the lost version 3.8 of CCASDI.
 
 # Changelog
 
+1.3.1 Fix issue with option parsing which could cause errors when processing input files with dashes in the name.
+
 1.3 Change default font size from 30 to 26. I'd miscalculated what size would match caption spacing slightly. Whoops. Related, remove the automatic font size reduction for STL subtitles. Modify conversion to replace only whitespace lines with a single linebreak and no-break space to reduce converted file size. Also modify conversion to detect and remove italic/underline changes that only cover spaces or non-printable characters. Remove warning when multiple captions which share the same timecode exactly are present, as this is normal in SCC output.
 
 1.2 Add option to disable bold for generated subtitles. Add option to override font used for subtitles. Font designation must use _ instead of space due to parsing, e.g. Courier Prime would be specified with "-fnCourier_Prime". Fix an issue with TTML/SMPTE-TT generation which could cause an infinite loop when generating multi-line subtitles. Allow conversion to continue when detecting a negative time code in input file when the Error Correction option is enabled. Add option to override font size in generated subtitles (-fsXX, e.g. ""-fs32")
