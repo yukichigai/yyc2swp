@@ -45,7 +45,7 @@ perl yyC2Swp.pl [-ec] [-cCC3] [-a] [-o01:00:00:00] [-td] [-x768] [-y576] [-fs36]
 
 -fn (OPTIONAL): Font name to use in generated subtitles. Spaces in the name must be replaced with underscore (_) e.g. \"Courier_Prime\" for Courier Prime. Not used by E608, G608, and SMPTE-TT. (DEFAULT: Courier_New)
 
--fs (OPTIONAL): Font size to use in generated subtitles. Non-numeric values are allowed but may produce undesired results. Value is in points (pt). Value reduced to 80% for STL subtitles. Not used by E608, G608, SMPTE-TT, TTML. (DEFAULT: 30)
+-fs (OPTIONAL): Font size to use in generated subtitles. Non-numeric values are allowed but may produce undesired results. Value is in points (pt). Not used by E608, G608, SMPTE-TT, TTML. (DEFAULT: 26)
 
 -nobold (OPTIONAL): Text in generated subtitles will normal font weight instead of bold. Not used by E608, G608, QuickTime, and STL. (DEFAULT: off/bold text enabled)
 
@@ -62,6 +62,10 @@ yyC2Swp assumes input files are for CEA-608 captions. Conversion of files contai
 Depending on the source media, certain SCC extraction tools (or versions of those tools) produce differences in formatting which this script is not (yet) capable of accounting for. These same tools usually support extraction to Grid 608 (G608) format and produce consistent results when outputting to that format. Grid 608 is also much easier to visually spot-check. If you are encountering undesired results when converting extracted SCC files you may want to extract to Grid 608 and convert from that instead. (Note that Grid 608 does not preserve background color, background alpha, or flashing text style effects)
 
 Full styling support is not yet implemented for some subtitle formats. Flashing text is not currently implemented for any subtitle format.
+
+Roll-up and paint-on captions are converted by creating a new subtitle each time the on screen text is updated. This will show the text as it would be presented (for the most part) but is a highly inefficient way to store it. I plan to implement proper roll-on behavior in formats which support it (mostly SubStation and Advanced Substation) at a later date.
+
+SCC Disassembly format (CCD) can only be converted to (and from) Scenarist Closed Caption format due to limitations in the existing code inherited from CCASDI. Changing this will require significant additions, but the ability to convert directly from CCD to other formats is planned for a future release.
 
 ## Current conversion options
 **Advanced SubStation (ASS)** produces the most consistent output for commonly used players and decoding libraries (VLC, MPC, MPV, Jellyfin, FFMPEG). It supports all CEA-608 features other than flashing text, and scales properly regardless of differences in resolution and/or aspect ratio between subtitle specifications and the actual media it is used with. Overall it is the most compatible yet accurate format for non-commercial/non-professional use, thus why it is the default.
@@ -94,6 +98,8 @@ Thanks to Emulgator on Doom9 for their analysis of the output from the [Zilog z8
 Thanks also to bbgdzxng1 for sharing the lost version 3.8 of CCASDI.
 
 # Changelog
+
+1.3 Change default font size from 30 to 26. I'd miscalculated what size would match caption spacing slightly. Whoops. Related, remove the automatic font size reduction for STL subtitles. Modify conversion to replace only whitespace lines with a single linebreak and no-break space to reduce converted file size. Also modify conversion to detect and remove italic/underline changes that only cover spaces or non-printable characters. Remove warning when multiple captions which share the same timecode exactly are present, as this is normal in SCC output.
 
 1.2 Add option to disable bold for generated subtitles. Add option to override font used for subtitles. Font designation must use _ instead of space due to parsing, e.g. Courier Prime would be specified with "-fnCourier_Prime". Fix an issue with TTML/SMPTE-TT generation which could cause an infinite loop when generating multi-line subtitles. Allow conversion to continue when detecting a negative time code in input file when the Error Correction option is enabled. Add option to override font size in generated subtitles (-fsXX, e.g. ""-fs32")
 

@@ -9,7 +9,7 @@
 #
 use strict;
 use utf8;
-my $Version = "1.2";
+my $Version = "1.3";
 # McPoodle (mcpoodle43@yahoo.com)
 # Further modifications by Y|yukichigai (yukichigai@hotmail.com)
 #
@@ -168,6 +168,12 @@ my $Version = "1.2";
 #   multi-line subtitles. Allow conversion to continue when detecting a negative time
 #   code in input file when the Error Correction option is enabled. Add option to
 #   override font size in generated subtitles (-fsXX, e.g. ""-fs32")
+# 1.3 Change default font size from 30 to 26. I'd miscalculated what size would match
+#   caption spacing slightly. Whoops. Modify conversion to replace only whitespace
+#   lines with a single linebreak to reduce converted file size. Also modify
+#   conversion to detect italic/underline changes that only cover spaces or non-
+#   printable characters. Remove warning when multiple captions which share the same
+#   timecode exactly are present, as this is normal in SCC output.
 sub usage;
 sub frame;
 sub timecodeof;
@@ -222,7 +228,7 @@ my $e608Rows = 15; # Number of rows we output/input for e608 (configurable)
 my $errorCorrection = 0; # Do we try to automatically correct errors?
 
 my $fontName = "Courier New"; # Font used for generated subtitles
-my $fontSize = 30; # Font size (in points)
+my $fontSize = 26; # Font size (in points)
 
 my $allbold = 1; # Are subtitles bolded by default?
 
@@ -735,7 +741,7 @@ LINELOOP: while (<RH>) {
       next LINELOOP;
     }
     $frames = frame($timecode);
-    if ($frames <= $lastframe) {
+    if ($frames < $lastframe) {
       # Y|y - All formats we convert to can handle out of order subtitles, but flag a warning just in case
       print "Warning: Timecode $timecode is out of order ($lastframe --> $frames)\n";
     }
@@ -1033,9 +1039,8 @@ sub usage {
   print "         be replaced with underscore (_) e.g. \"Courier_Prime\" for Courier Prime.\n";
   print "         Not used by E608, G608, and SMPTE-TT. (DEFAULT: Courier_New)\n";
   print "    -fs (OPTIONAL): Font size to use in generated subtitles. Non-numeric values are\n";
-  print "         allowed but may produce undesired results. Value is in points (pt). Value\n";
-  print "         reduced to 80% for STL subtitles. Not used by E608, G608, SMPTE-TT, TTML.\n";
-  print "         (DEFAULT: 30)\n";
+  print "         allowed but may produce undesired results. Value is in points (pt). Not\n";
+  print "         used by E608, G608, SMPTE-TT, TTML. (DEFAULT: 30)\n";
   print "  NOTE: outfile argument is optional (name.scc/g608/e608 -> name.ass). Format is\n";
   print "    controlled by outfile suffix: .ass Advanced SubStation (default),\n";
   print "    .ccd SCC Disassembly (SCC input only), .e608 Extended Grid 608, .g608 Grid 608,\n";
@@ -1191,6 +1196,7 @@ sub clearScreen {
   $bgcolor = "B";
 }
 
+# TO DO: add roll-up output for SSA/ASS
 # subroutine to roll up lines when {CR} is received in roll-up mode
 sub rollUp {
   my $row;
@@ -1669,6 +1675,17 @@ sub convertToSub {
       $subtitle = $subtitle."{\\i0}";
     }
     $styling = "R";
+
+    # Check for any lines with italic/underline changes that only affect whitespaces and strip them.
+    while(($subtitle =~ m/(\{\\i[01]\})(\s+)(\{\\i[01]\})/) or ($subtitle =~ m/(\{\\u[01]\})(\s+)(\{\\u[01]\})/)){
+      $subtitle = $`.$2.$';
+    }
+
+    # Check for any whitespace-only lines and replace them with a single NBSP and a linebreak
+    $subtitle =~ s/\n[ \xa0]{2,}\n/\n\xa0\n/g;
+    # For whatever reason we need to do this twice or we get alternating lines. Instead of bashing my face into perl Imma just do this
+    $subtitle =~ s/\n[ \xa0]{2,}\n/\n\xa0\n/g;
+
   } elsif ($convertFormat eq "WebVTT"){ # WebVTT closes out tags slightly differently
     if ($color ne "0" or $bgcolor ne "B") {
       $color = "0";
@@ -1682,6 +1699,16 @@ sub convertToSub {
       $subtitle = $subtitle."</i>";
     }
     $styling = "R";
+
+    # Check for any lines with italic/underline changes that only affect whitespaces and strip them.
+    while(($subtitle =~ m|(</?i>)(\s+)(</?i>)|) or ($subtitle =~ m|(</?u>)(\s+)(</?u>)|)){
+      $subtitle = $`.$2.$';
+    }
+
+    # Check for any whitespace-only lines and replace them with a single NBSP and a linebreak
+    $subtitle =~ s/\n[ \xa0]{2,}\n/\n\xa0\n/g;
+    # For whatever reason we need to do this twice or we get alternating lines. Instead of bashing my face into perl Imma just do this
+    $subtitle =~ s/\n[ \xa0]{2,}\n/\n\xa0\n/g;
   }
   # Now we need to readjust the y coordinates to be zero-indexed (i.e. subtract one from each)
   #  Otherwise vertical positioning math will be slightly off
@@ -1769,13 +1796,7 @@ print WH "STYLE\n::cue {\n  font-family: $fontName, monospace;\n  font-size: ".$
   elsif ($convertFormat eq "Spruce Technologies Language"){
     $input =~ m/.*\.(.*)$/;
     print WH "//Converted from ".$1." Closed Captions by yyC2Swp ".$Version." (a CCASDI fork)\n";
-    my $fontSizeAdjust = int($fontSize);
-    if($fontSizeAdjust <= 0){
-      $fontSizeAdjust = 24;
-    } else {
-      $fontSizeAdjust = int($fontSizeAdjust * 4 / 5);
-    }
-    print WH "\$FontName = $fontName\n\$FontSize = $fontSizeAdjust\n\$HorzAlign = Center\n\$VertAlign = Top\n";
+    print WH "\$FontName = $fontName\n\$FontSize = $fontSize\n\$HorzAlign = Center\n\$VertAlign = Top\n";
     # Colors (default) are 0: black, 1: offblack, 2: white, 3: red, 4: gray, 5: silver, 6: aqua/cyan, 7: fuschia/magenta, 8: yellow, 9: navy, 10: green, 11: maroon, 12: teal, 13: purple, 14: olive, 15: white
     # These are different in DVD Studio Pro, where 3 is white. Sometimes.
     print WH "\$ColorIndex1 =3\n\$ColorIndex2 =4\n\$ColorIndex3 =1\n\$ColorIndex4 =0\n"; # C1 = outline, C2 = outer outline, C3 = text, C4 = background
@@ -6162,6 +6183,8 @@ sub disXDS {
   return $xds."}";
 }
 
+
+# TO DO - Add option to convert straight from CCD
 sub asCommand {
   my $command = shift(@_);
   if ($command =~ /^XDS/) {return asXDS($command);}
