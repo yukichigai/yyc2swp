@@ -29,6 +29,7 @@ If Courier Prime is installed but still not being used in place of Courier New y
   </match>
 </fontconfig>
 ```
+Be sure to run the command **fc-cache -f** after creating the file to update your system's font cache.
 
 # Usage
 
