@@ -14,7 +14,7 @@ While there is a standalone executable version of yyC2Swp available, you may wan
 
 yyC2Swp uses Courier New as the target font for generated subtitles, so proper display during playback requires a compatible monospace font. John August's [Courier Prime](https://johnaugust.com/2013/introducing-courier-prime) matches the size and spacing of Courier New exactly and is freely available. It is present in several major package managers, and once installed many distros will automatically use Courier Prime when Courier New is called for. You can confirm if your distro does this using the command ```fc-match 'Courier New'```. If you see "Courier Prime" listed in the output then you should be good to go.
 
-If Courier Prime is installed but still not being used in place of Courier New you can manually add an alias by creating a font configuration file, either per-user at **~/.config/fontconfig/fonts.conf** or system-wide at **/etc/fonts/conf.d/WHATEVERNAMEYOUWANT.conf**. Below is an example .conf file:
+If Courier Prime is installed but still not being used in place of Courier New you can manually add an alias by creating a font configuration file, either per-user at **~/.config/fontconfig/fonts.conf** or system-wide at **/etc/fonts/conf.d/30-WHATEVERNAMEYOUWANT.conf**. Below is an example .conf file:
 
 ```
 <?xml version='1.0'?>
